@@ -1,5 +1,5 @@
 
-import sys
+
 import argparse
 import random
 import networkx as nx
@@ -31,7 +31,8 @@ def parse_arguments():
     )
     parser.add_argument(
         "rule",
-        choices=["random_mst", "random_all", "most_violated", "critical_edge", "most_fractional", "strong_branching", "strong_branching_sim","sb_fractional"],
+        # choices=["random_mst", "random_all","random_fractional", "most_violated", "critical_edge", "most_fractional", "strong_branching", "strong_branching_sim","sb_fractional", "strong_branching_all"],
+        choices=["random_mst", "random_all","random_fractional", "most_violated", "critical_edge", "most_fractional", "strong_branching", "strong_branching_sim","sb_fractional", "strong_branching_all", "reliability", "hybrid_strong_fractional"],
         help="The branching rule to use (random_mst: pick from MST edges, random_all: pick from all variables, most_fractional: pick the most fractional edge, strong_branching: use strong branching)"
     )
     parser.add_argument(
@@ -187,19 +188,22 @@ if __name__ == "__main__":
         mstkp_instance.edges,
         mstkp_instance.num_nodes,
         mstkp_instance.budget,
-        initial_lambda=0.1,
+        initial_lambda=0.05,
         inherit_lambda=args.inherit_lambda,
         branching_rule=args.rule,
-        step_size=0.01,
+        step_size=0.00001,
         inherit_step_size=args.inherit_step_size,
         use_cover_cuts=args.cover_cuts,
         cut_frequency=args.cut_frequency,
         node_cut_frequency=10,
         parent_cover_cuts=None,
         parent_cover_multipliers=None,
-        use_bisection=args.use_bisection
+        use_bisection=args.use_bisection,
+        reliability_eta=8,  # Or argparse it
+        lookahead_lambda=4,
+        # partial_iters=5
     )
-
+   
     config = {
         "branching_rule": args.rule,
         "use_2opt": args.use_2opt,
@@ -207,6 +211,7 @@ if __name__ == "__main__":
         "use_bisection": args.use_bisection
     }
     branching_rule = RandomBranchingRule()
+
     bnb_solver = BranchAndBound(
         branching_rule,
         verbose=args.verbose,
@@ -243,21 +248,28 @@ if __name__ == "__main__":
         )
     else:
         if args.use_2opt and initial_solution and initial_upper_bound < float("inf"):
-            bnb_solver.best_solution = MSTNode(
-                mstkp_instance.edges,
-                mstkp_instance.num_nodes,
-                mstkp_instance.budget,
-                fixed_edges=set(initial_solution)
-            )
+            # bnb_solver.best_solution = MSTNode(
+            #     mstkp_instance.edges,
+            #     mstkp_instance.num_nodes,
+            #     mstkp_instance.budget,
+            #     fixed_edges=set(initial_solution)
+            # )
+            bnb_solver.best_solution_edges = list(initial_solution)
+            bnb_solver.best_upper_bound = initial_upper_bound
             bnb_solver.best_upper_bound = initial_upper_bound
         best_solution, best_upper_bound = bnb_solver.solve(root_node)
 
     print(f"Optimal MST Cost within Budget: {best_upper_bound}")
     if best_solution:
         print("Edges in the Optimal MST:")
-        for edge in best_solution.mst_edges:
+        # for edge in best_solution.mst_edges:
+        #     print(edge)
+        for edge in best_solution if isinstance(best_solution, list) else best_solution.mst_edges:
             print(edge)
     else:
         print("No feasible solution found.")
 
     print(f"Lagrangian MST time: {LagrangianMST.total_compute_time:.2f}s")
+
+    ##############################################
+#

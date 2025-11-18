@@ -1,6 +1,7 @@
 import random
 import networkx as nx
 import matplotlib.pyplot as plt
+# import numpy as np
 
 MAX_EDGE_WEIGHT = 100
 MAX_EDGE_LENGTH = 100
@@ -56,7 +57,9 @@ class MSTKPInstance:
                 edges_added.add((u, v))
 
         # Store edges in list format
-        self.edges = [(u, v, d["weight"], d["length"]) for u, v, d in self.graph.edges(data=True)]
+        # self.edges = [(u, v, d["weight"], d["length"]) for u, v, d in self.graph.edges(data=True)]
+        self.edges = [(min(u, v), max(u, v), d["weight"], d["length"]) for u, v, d in self.graph.edges(data=True)]        
+
 
         # Step 3: Compute the two MSTs
         self.tw = nx.minimum_spanning_tree(self.graph, weight="weight")
@@ -69,7 +72,9 @@ class MSTKPInstance:
         assert 0 <= CONVEX_BUDGET_FACTOR <= 1
         self.budget = int(CONVEX_BUDGET_FACTOR * total_tw_weight + (1 - CONVEX_BUDGET_FACTOR) * total_tl_weight)
         # self.budget = self.num_nodes * 20 -20
+        # self.budget=900]
         assert total_tw_weight <= self.budget <= total_tl_weight
+        del self.graph
 
     def print_all_edges(self):
         print("All edges in the graph (u, v, weight, length):")
@@ -88,7 +93,7 @@ class MSTKPInstance:
         plt.show()
 
 if __name__ == "__main__":
-    instance = MSTKPInstance(50, 0.3)  # More edges with higher density
+    instance = MSTKPInstance(100, 0.3)  # More edges with higher density
     instance.plot()
     print(f"Budget: {instance.budget}")
     print(f"Edges: {instance.edges}")

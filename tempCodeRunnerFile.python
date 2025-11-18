@@ -1,0 +1,37 @@
+import networkx as nx
+import matplotlib.pyplot as plt
+import random
+
+random.seed(42)  # For reproducibility
+G = nx.complete_graph(6)
+mapping = {0:'A', 1:'B', 2:'C', 3:'D', 4:'E', 5:'F'}
+G = nx.relabel_nodes(G, mapping)
+
+# Assign random costs and weights to edges
+for edge in G.edges:
+    G.edges[edge]['cost'] = random.randint(1, 10)
+    G.edges[edge]['weight'] = random.randint(1, 5)
+
+# Compute MST based on costs
+mst = nx.minimum_spanning_tree(G, weight='cost')
+
+# Set up the plot
+plt.figure(figsize=(10, 10))
+pos = nx.circular_layout(G)
+
+# Draw nodes and labels
+nx.draw_networkx_nodes(G, pos)
+nx.draw_networkx_labels(G, pos)
+
+# Draw all edges in black, MST edges in red and thicker
+nx.draw_networkx_edges(G, pos, edge_color='black', width=1)
+nx.draw_networkx_edges(mst, pos, edge_color='red', width=3)
+
+# Label edges with cost/weight
+labels = {edge: f"{G.edges[edge]['cost']}/{G.edges[edge]['weight']}" for edge in G.edges}
+nx.draw_networkx_edge_labels(G, pos, edge_labels=labels, font_size=8)
+
+# Adjust plot
+plt.gca().set_aspect('equal')
+plt.axis('off')
+plt.show()
