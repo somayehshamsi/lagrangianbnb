@@ -54,7 +54,8 @@ def parse_arguments():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="/Users/ssha0224/Desktop",
+        # default="/Users/ssha0224/Desktop",
+        default="/mnt/home/ssha0224/output",
         help="Directory to save results and instances (default: /Users/ssha0224/Desktop)"
     )
     parser.add_argument(
