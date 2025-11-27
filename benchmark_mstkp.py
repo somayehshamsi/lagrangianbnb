@@ -24,7 +24,6 @@ from pathlib import Path
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-print("test")
 
 def parse_arguments():
     parser = argparse.ArgumentParser(prog='MSTKP Benchmark Comparison', usage='%(prog)s [options]')
