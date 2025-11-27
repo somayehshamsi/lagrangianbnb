@@ -8,6 +8,8 @@ from mstkpbranchandbound import MSTNode
 from branchandbound import RandomBranchingRule, BranchAndBound
 from lagrangianrelaxation import LagrangianMST
 from mstkpinstance import MSTKPInstance
+print("testsolver")
+
 
 def parse_arguments():
     parser = argparse.ArgumentParser(prog='MST Lagrangean B&B', usage='%(prog)s [options]')

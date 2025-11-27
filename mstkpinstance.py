@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 MAX_EDGE_WEIGHT = 100
 MAX_EDGE_LENGTH = 100
 CONVEX_BUDGET_FACTOR = 0.2
+print("testinstance")
+
 
 class MSTKPInstance:
     """

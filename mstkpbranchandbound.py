@@ -9,6 +9,8 @@ from collections import defaultdict  # Add at top if not imported
 import random
 
 from contextlib import contextmanager
+print("testmskpbnb")
+
 
 class SolverPool:
     """

@@ -7,6 +7,7 @@ from scipy.optimize import linprog
 import math
 import heapq
 import hashlib
+print("test lag")
 
 
 
