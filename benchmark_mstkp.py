@@ -373,14 +373,19 @@ def main():
     args = parse_arguments()
     random.seed(args.seed)
 
-    output_dir = os.path.join(args.output_dir, datetime.now().strftime("%Y%m%d_%H%M%S"))
+    # output_dir = os.path.join(args.output_dir, datetime.now().strftime("%Y%m%d_%H%M%S"))
+    # os.makedirs(output_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"{timestamp}_seed{args.seed}"
+    output_dir = os.path.join(args.output_dir, run_name)
     os.makedirs(output_dir, exist_ok=True)
 
+
     # Delete existing instances.pkl to ensure new instances are generated
-    instances_path = os.path.join(args.output_dir, "instances.pkl")
-    if os.path.exists(instances_path):
-        os.remove(instances_path)
-        logger.info(f"Deleted existing {instances_path} to generate new instances")
+    # instances_path = os.path.join(args.output_dir, "instances.pkl")
+    # if os.path.exists(instances_path):
+    #     os.remove(instances_path)
+    #     logger.info(f"Deleted existing {instances_path} to generate new instances")
 
     # Generate instances
     instances = generate_instances(args.num_instances, args.num_nodes, args.density, args.seed)
