@@ -42,7 +42,7 @@ def parse_arguments():
     parser.add_argument(
         "--density",
         type=float,
-        default= 0.3,
+        default= 1,
         help="Edge density of the graph (default: 0.3)"
     )
     parser.add_argument(
@@ -54,8 +54,8 @@ def parse_arguments():
     parser.add_argument(
         "--output-dir",
         type=str,
-        # default="/Users/ssha0224/Desktop",
-        default="/mnt/home/ssha0224/output",
+        default="/Users/ssha0224/Desktop",
+        # default="/mnt/home/ssha0224/output",
         help="Directory to save results and instances (default: /Users/ssha0224/Desktop)"
     )
     parser.add_argument(
@@ -127,7 +127,7 @@ def run_experiment(instance, seed, config, args):
     pseudocosts_down = defaultdict(float)
     counts_up = defaultdict(int)
     counts_down = defaultdict(int)
-    reliability_eta = 5
+    reliability_eta = 8
     lookahead_lambda = 4
 
 
@@ -139,7 +139,7 @@ def run_experiment(instance, seed, config, args):
         inherit_lambda=inherit_lambda,
         inherit_step_size = inherit_step_size,
         branching_rule=branching_rule,
-        step_size=0.00001,
+        step_size=0.001,
         # inherit_step_size=False,
         use_cover_cuts=cover_cuts,
         cut_frequency=5,
@@ -419,68 +419,69 @@ def main():
             "inherit_lambda": True
         }
 
-        # ,
-        # {
-        #     "branching_rule": "random_mst",
-        #     "use_bisection": False,
-        #     "use_2opt": False,
-        #     "use_shooting": False,
-        #     "cover_cuts": True,
-        #     "inherit-step-size": False,
-        #     "inherit_lambda": True
-        # }
-        # , 
-        # {
-        #     "branching_rule": "random_fractional",
-        #     "use_bisection": False,
-        #     "use_2opt": False,
-        #     "use_shooting": False,
-        #     "cover_cuts": True,
-        #     "inherit-step-size": False,
-        #     "inherit_lambda": True
-        # }
-        # ,
-        # {
-        #     "branching_rule": "sb_fractional",
-        #     "use_bisection": False,
-        #     "use_2opt": False,
-        #     "use_shooting": False,
-        #     "cover_cuts": True,
-        #     "inherit-step-size": False,
-        #     "inherit_lambda": True
-        # }
-        # ,
+        ,
+        {
+            "branching_rule": "random_mst",
+            "use_bisection": False,
+            "use_2opt": False,
+            "use_shooting": False,
+            "cover_cuts": True,
+            "inherit-step-size": False,
+            "inherit_lambda": True
+        }
+        , 
+        {
+            "branching_rule": "random_fractional",
+            "use_bisection": False,
+            "use_2opt": False,
+            "use_shooting": False,
+            "cover_cuts": True,
+            "inherit-step-size": False,
+            "inherit_lambda": True
+        }
+        ,
+        {
+            "branching_rule": "sb_fractional",
+            "use_bisection": False,
+            "use_2opt": False,
+            "use_shooting": False,
+            "cover_cuts": True,
+            "inherit-step-size": False,
+            "inherit_lambda": True
+        }
+        ,
 
-        # {
-        #     "branching_rule": "strong_branching",
-        #     "use_bisection": False,
-        #     "use_2opt": False,
-        #     "use_shooting": False,
-        #     "cover_cuts": False,
-        #     "inherit-step-size": False,
-        #     "inherit_lambda": True
-        # }
-        # ,
+        {
+            "branching_rule": "strong_branching",
+            "use_bisection": False,
+            "use_2opt": False,
+            "use_shooting": False,
+            "cover_cuts": True,
+            "inherit-step-size": False,
+            "inherit_lambda": True
+        }
+        ,
+        
 
-        # {
-        #     "branching_rule": "random_all",
-        #     "use_bisection": False,
-        #     "use_2opt": False,
-        #     "use_shooting": False,
-        #     "cover_cuts": True,
-        #     "inherit-step-size": False,
-        #     "inherit_lambda": True
-        # }
-        # ,
-        # {
-        #     "branching_rule": "strong_branching_all",
-        #     "use_bisection": False,
-        #     "use_2opt": False,
-        #     "use_shooting": False,
-        #     "cover_cuts": True,
-        #     "inherit-step-size": False,
-        #     "inherit_lambda": True
-        # }
+        {
+            "branching_rule": "random_all",
+            "use_bisection": False,
+            "use_2opt": False,
+            "use_shooting": False,
+            "cover_cuts": True,
+            "inherit-step-size": False,
+            "inherit_lambda": True
+        }
+        ,
+        {
+            "branching_rule": "strong_branching_all",
+            "use_bisection": False,
+            "use_2opt": False,
+            "use_shooting": False,
+            "cover_cuts": True,
+            "inherit-step-size": False,
+            "inherit_lambda": True
+        }
     ]
 
     results = []

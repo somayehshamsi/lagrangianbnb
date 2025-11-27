@@ -18,20 +18,6 @@ import abc
 import random
 
 
-# def check_memory_limit(threshold_percent=80):
-#     """Quickly check if memory usage exceeds threshold percent of total RAM."""
-#     try:
-#         process = psutil.Process()
-#         usage_percent = process.memory_info().rss / psutil.virtual_memory().total * 100
-#         if usage_percent > threshold_percent:
-#             print(f"WARNING: High memory usage: {usage_percent:.1f}% of total RAM")
-#             # Optionally run garbage collection only if memory is really critical
-#             gc.collect()
-#             return True
-#         return False
-#     except Exception as e:
-#         print(f"Error checking memory: {e}")
-#         return False
     
 class BranchingRule(abc.ABC):
     """
@@ -171,7 +157,7 @@ class BranchAndBound:
              'nodes_pruned_feasible', 'nodes_pruned_invalid_mst', 'nodes_pruned_budget', 'nodes_pruned_gap',
              'timed_out', 'final_duality_gap']
     
-    def __init__(self, branching_rule: BranchingRule, verbose=False, duality_gap_threshold=0.001, 
+    def __init__(self, branching_rule: BranchingRule, verbose=False, duality_gap_threshold=0.003, 
                  stagnation_limit=1000, config: dict = None, instance_seed: int = None):
         """
         Initializes the B&B with a branching rule, verbose flag, duality gap threshold, stagnation limit,
@@ -364,7 +350,9 @@ class BranchAndBound:
                 self.best_lower_bound = max(self.best_lower_bound, lb)
 
                 duality_gap = self.best_upper_bound - node.local_lower_bound if self.best_upper_bound < float("inf") else float("inf")
-                threshold = min(self.duality_gap_threshold * self.best_upper_bound, 1) if self.best_upper_bound < float("inf") else float("inf")
+                # threshold = min(self.duality_gap_threshold * self.best_upper_bound, 0.98) if self.best_upper_bound < float("inf") else float("inf")
+                threshold = self.duality_gap_threshold * self.best_upper_bound if self.best_upper_bound < float("inf") else float("inf")
+
 
                 upper_bound = node.best_upper_bound
                 if upper_bound < self.best_upper_bound:

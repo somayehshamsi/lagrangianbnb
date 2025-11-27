@@ -5,6 +5,10 @@ from time import time
 from collections import defaultdict, OrderedDict
 from scipy.optimize import linprog  
 import math
+import heapq
+import hashlib
+
+
 
 class UnionFind:
     __slots__ = ['parent', 'rank', 'size']
@@ -60,7 +64,7 @@ class LagrangianMST:
 
 
     def __init__(self, edges, num_nodes, budget, fixed_edges=None, excluded_edges=None,
-                 initial_lambda=0.05, step_size=0.00001, max_iter=10, p=0.95,
+                 initial_lambda=0.05, step_size=0.001, max_iter=30, p=0.95,
                  use_cover_cuts=False, cut_frequency=5, use_bisection=False,
                  verbose=False, shared_graph=None):
         start_time = time()
@@ -489,7 +493,6 @@ class LagrangianMST:
     
     
     def compute_modified_weights(self):
-        import numpy as np
 
         base = self.edge_weights.copy()
         lam = max(0.0, min(getattr(self, "lmbda", 0.0), 1e4))
@@ -531,6 +534,7 @@ class LagrangianMST:
                 m = mu[i]
                 if m > 0.0 and idxs.size:
                     weights[idxs] += m
+
         else:
             # Fallback
             for i, (cut, _) in enumerate(self.best_cuts):
@@ -560,10 +564,9 @@ class LagrangianMST:
 
    
     def _get_free_mask(self):
-        import numpy as np
 
         fixed = frozenset(self.fixed_edges)
-        forbidden = frozenset(getattr(self, "forbidden_edges", set()))
+        forbidden = frozenset(getattr(self, "excluded_edges", set()))
         key = (fixed, forbidden)
         if self._free_mask_cache is not None and self._free_mask_key == key:
             return self._free_mask_cache
@@ -605,7 +608,6 @@ class LagrangianMST:
         if not fractional_solution:
             lightweight = ()
         else:
-            import heapq
             lightweight = tuple(
                 heapq.nlargest(20, fractional_solution.items(), key=lambda kv: abs(kv[1]))
             )
@@ -657,48 +659,53 @@ class LagrangianMST:
         uf = UnionFind(self.num_nodes)
         mst_edges = []
         mst_cost = 0.0
+        mst_length = 0.0
 
         for edge_idx in self.fixed_edge_indices:
             u, v = self.edge_list[edge_idx]
             if uf.union(u, v):
                 mst_edges.append((u, v))
-                mst_cost += current_weights[edge_idx]
+                mst_cost   += current_weights[edge_idx]
+                mst_length += self.edge_lengths[edge_idx]
             else:
+                # Fixed edges already create a cycle -> infeasible
                 return float('inf'), float('inf'), []
 
         weight_changes = current_weights - prev_weights
         changed_indices = np.where(np.abs(weight_changes) > self.cache_tolerance)[0]
-        changed_edges = set(changed_indices)
+        changed_edges   = set(changed_indices)
 
-        prev_mst_indices = {self.edge_indices[(u, v)] for u, v in prev_mst_edges
-                            if self.edge_indices[(u, v)] not in self.fixed_edge_indices}
-        candidate_indices = (prev_mst_indices | changed_edges) - self.excluded_edge_indices - self.fixed_edge_indices
+        prev_mst_indices = {
+            self.edge_indices[(u, v)] for u, v in prev_mst_edges
+            if self.edge_indices[(u, v)] not in self.fixed_edge_indices
+        }
+        candidate_indices = (
+            prev_mst_indices | changed_edges
+        ) - self.excluded_edge_indices - self.fixed_edge_indices
+
         sorted_edges = sorted(candidate_indices, key=lambda i: current_weights[i])
 
         for edge_idx in sorted_edges:
             u, v = self.edge_list[edge_idx]
             if uf.union(u, v):
                 mst_edges.append((u, v))
-                mst_cost += current_weights[edge_idx]
+                mst_cost   += current_weights[edge_idx]
+                mst_length += self.edge_lengths[edge_idx]
 
-        if uf.count_components() > 1 or len(set(u for u, _ in mst_edges) | set(v for _, v in mst_edges)) < self.num_nodes:
+        # NEW: cheap validity check – tree must have exactly n-1 edges
+        if len(mst_edges) != self.num_nodes - 1:
             return float('inf'), float('inf'), []
 
-        mst_length = sum(self.edge_lengths[self.edge_indices[(u, v)]] 
-                         for u, v in mst_edges)
-
         return mst_cost, mst_length, mst_edges
-    
 
+    
     def compute_mst(self, modified_edges=None):
-        import hashlib
         start_time = time()
         
         if modified_edges is not None:
             weights = np.array([w for _, _, w in modified_edges], dtype=float)
         else:
             weights = self.compute_modified_weights()
-
 
         weights = np.nan_to_num(
             weights,
@@ -708,47 +715,39 @@ class LagrangianMST:
             copy=False,
         )
 
-
-        ratio = weights / self.cache_tolerance
-        ratio = np.nan_to_num(ratio, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
-        ratio = np.clip(ratio, -1e9, 1e9)
-
-        quantized = np.ascontiguousarray(ratio, dtype=np.float32)
-        digest = hashlib.blake2b(quantized.view(np.uint8), digest_size=16).digest()
-        weights_key = (digest, quantized.shape[0])
-        self.consecutive_cache_hits = getattr(self, 'consecutive_cache_hits', 0)
-        cached_result = self.mst_cache.get(weights_key)
-        if cached_result is not None and self.consecutive_cache_hits < 5:
-            self.consecutive_cache_hits += 1
-            if self.verbose:
-                print(f"Cache hit: Retrieved MST with length={cached_result[1]:.2f}, consecutive_hits={self.consecutive_cache_hits}")
-            end_time = time()
-            LagrangianMST.total_compute_time += end_time - start_time
-            return cached_result
-        
-        self.consecutive_cache_hits = 0
-        if self.verbose:
-            print(f"Cache miss: Computing new MST for weights_key")
-        
+        # ---- SIMPLE VERSION: NO HASHING, NO CACHE ----
         mst_cost, mst_length, mst_edges = self.custom_kruskal(weights)
         if self.verbose:
-            print(f"New MST computed: length={mst_length:.2f}")
-        
-        self.mst_cache.put(weights_key, (mst_cost, mst_length, mst_edges))
+            print(f"MST computed (no cache): length={mst_length:.2f}")
+
+        # Optionally remember last MST if you use it elsewhere
+        self.last_mst_edges = mst_edges
 
         end_time = time()
         LagrangianMST.total_compute_time += end_time - start_time
         return mst_cost, mst_length, mst_edges
-    
+
+
+
     def compute_mst_incremental(self, prev_weights, prev_mst_edges):
+        # Compute current modified weights ONCE
         current_weights = self.compute_modified_weights()
+        # Cache them so the caller (solve) can reuse without recomputing
+        self._last_mw = current_weights
+
+        # First call or no previous MST: just run full Kruskal
+        if prev_weights is None or prev_mst_edges is None:
+            if self.verbose:
+                print("Incremental MST: no previous MST, using full custom_kruskal")
+            return self.custom_kruskal(current_weights)
+
         weight_changes = current_weights - prev_weights
 
         if np.all(np.abs(weight_changes) < 1e-6):
-            mst_cost = sum(current_weights[self.edge_indices[(u, v)]] 
-                        for u, v in prev_mst_edges)
-            mst_length = sum(self.edge_lengths[self.edge_indices[(u, v)]] 
-                            for u, v in prev_mst_edges)
+            mst_cost = sum(current_weights[self.edge_indices[(u, v)]]
+                           for u, v in prev_mst_edges)
+            mst_length = sum(self.edge_lengths[self.edge_indices[(u, v)]]
+                             for u, v in prev_mst_edges)
             if self.verbose:
                 print(f"Incremental MST: Reusing previous MST with length={mst_length:.2f}")
             return mst_cost, mst_length, prev_mst_edges
@@ -757,7 +756,8 @@ class LagrangianMST:
             print(f"Incremental MST: Computing new MST due to weight changes")
         return self.incremental_kruskal(prev_weights, prev_mst_edges, current_weights)
 
-    
+
+
    
 
     def solve(self, inherited_cuts=None, inherited_multipliers=None, depth=0, node=None):
@@ -818,10 +818,6 @@ class LagrangianMST:
         prev_weights = None
         prev_mst_edges = None
 
-        lambda_min = 0.0
-        lambda_max = 10.0
-        bisection_tolerance = 1e-5
-
        
         if self.use_bisection:
         # Validate graph and edges
@@ -830,604 +826,846 @@ class LagrangianMST:
                     print(f"Error at depth {depth}: Empty edge list or disconnected graph in bisection path")
                 return self.best_lower_bound, self.best_upper_bound, []
             
-            # Check for invalid edge weights/lengths
-            for u, v, w, l in self.edges:
-                if math.isnan(w) or math.isinf(w) or math.isnan(l) or math.isinf(l) or l <= 0:
-                    if self.verbose:
-                        print(f"Error at depth {depth}: Invalid edge ({u},{v}) with weight={w}, length={l}")
-                    return self.best_lower_bound, self.best_upper_bound, []
 
-            # Initialize bounds
-            lambda_min = 0.0
-            lambda_max = 10.0
-            try:
-                lambda_max = max(10.0, max(w / l for _, _, w, l in self.edges if l > 0))
-            except (ValueError, ZeroDivisionError) as e:
-                if self.verbose:
-                    print(f"Warning at depth {depth}: Failed to compute lambda_max: {e}. Using default lambda_max=10.0")
-                lambda_max = 10.0
-            
-            bisection_tolerance = 1e-5
-            subgradient_tolerance = 1e-5
-            max_iter = 10
-            iter_num = 0
-            no_improvement_count = 0
-            polyak_enabled = False
-            self._moving_upper = self.best_upper_bound if self.best_upper_bound < float('inf') else 1000.0
-            
-            # Compute initial subgradient at lambda_min
-            self.lmbda = lambda_min
-            try:
-                mst_cost_min, mst_length_min, mst_edges_min = self.compute_mst()
-                if math.isnan(mst_cost_min) or math.isinf(mst_cost_min) or math.isnan(mst_length_min) or math.isinf(mst_length_min):
-                    raise ValueError("Initial MST at lambda_min produced invalid cost or length")
-                S_min = mst_length_min - self.budget
-                self.last_mst_edges = [tuple(sorted((u, v))) for u, v in mst_edges_min]
-            except Exception as e:
-                if self.verbose:
-                    print(f"Bisection initialization failed at lambda_min (depth {depth}): {e}")
-                return self.best_lower_bound, self.best_upper_bound, []
-            
-            # Initialize S_max with a safe default
-            S_max = float('inf')
-            if S_min > 0:
-                self.lmbda = lambda_max
-                expansion_iter = 0
-                while expansion_iter < 10:
-                    try:
-                        mst_cost_max, mst_length_max, mst_edges_max = self.compute_mst()
-                        if math.isnan(mst_cost_max) or math.isinf(mst_cost_max) or math.isnan(mst_length_max) or math.isinf(mst_length_max):
-                            raise ValueError("Initial MST at lambda_max produced invalid cost or length")
-                        S_max = mst_length_max - self.budget
-                        self.last_mst_edges = [tuple(sorted((u, v))) for u, v in mst_edges_max]
-                        if S_max <= 0:
-                            break
-                        lambda_max *= 2
-                        self.lmbda = lambda_max
-                        expansion_iter += 1
-                    except Exception as e:
-                        if self.verbose:
-                            print(f"Error expanding lambda_max (iter {expansion_iter}, depth {depth}): {e}")
-                        S_max = -1.0  # Assume under-budget to continue
-                        break
 
-            while (lambda_max - lambda_min >= bisection_tolerance and 
-                abs(S_min) > subgradient_tolerance and abs(S_max) > subgradient_tolerance and 
-                iter_num < max_iter):
+    #     else:  # Subgradient method with Polyak hybrid + cover cuts (λ, μ), depth-based freezing, and saying that is consitent with modified weight
+    #    # increasing the number of iterations in the root, asliiiiiiiiiii tariiiiiiin asliiiiiiiiiitarin
+    #         # --- Tunables / safety limits ---
+    #         import numpy as np
+
+    #         MAX_SOLUTIONS    = getattr(self, "max_primal_solutions", 50)
+    #         CLEANUP_INTERVAL = getattr(self, "cleanup_interval", 100)
+    #         max_iter         = min(self.max_iter, 200)
+
+    #         # Polyak / momentum for λ
+    #         self.momentum_beta = getattr(self, "momentum_beta", 0.9)
+    #         gamma_base         = getattr(self, "gamma_base", 0.1)
+
+    #         # μ update parameters (you can tune these later if needed)
+    #         gamma_mu         = getattr(self, "gamma_mu", 0.30)
+    #         mu_increment_cap = getattr(self, "mu_increment_cap", 1.0)
+    #         eps              = 1e-12
+
+    #         # Depth-based behaviour
+    #         max_cut_depth = getattr(self, "max_cut_depth", 3)                 # where we ADD cuts
+    #         max_mu_depth  = getattr(self, "max_mu_depth", 5)      # where we UPDATE μ / use cuts in dual
+    #         is_root       = (depth == 0)
+
+    #         # Node-level separation parameters
+    #         max_active_cuts           = getattr(self, "max_active_cuts", 5)
+    #         max_new_cuts_per_node     = getattr(self, "max_new_cuts_per_node", 5)
+    #         min_cut_violation_for_add = getattr(self, "min_cut_violation_for_add", 1.0)
+    #         dead_mu_threshold         = getattr(self, "dead_mu_threshold", 1e-6)
+
+    #         # Extra iterations allowed at root while we haven't seen a violating MST
+    #         root_max_iter = int(getattr(self, "root_max_iter", max_iter * 2))
+
+    #         # Ensure cut structures exist
+    #         if not hasattr(self, "best_cuts"):
+    #             self.best_cuts = []   # list of (set(edges), rhs)
+    #         if not hasattr(self, "best_cut_multipliers"):
+    #             self.best_cut_multipliers = {}  # μ_i for each cut
+    #         if not hasattr(self, "best_cut_multipliers_for_best_bound"):
+    #             self.best_cut_multipliers_for_best_bound = {}  # μ at best LB
+
+    #         # Which behaviour at this node?
+    #         cutting_active_here = self.use_cover_cuts and (depth <= max_cut_depth)   # can ADD cuts
+    #         mu_dynamic_here     = self.use_cover_cuts and (depth <= max_mu_depth)    # can UPDATE μ / use in dual
+    #         cuts_present_here   = self.use_cover_cuts and bool(self.best_cuts)
+
+    #         # IMPORTANT: if cuts are present but this node is *not* allowed to update μ,
+    #         # we ignore μ in the dual here by zeroing them. Cuts still used for pruning.
+    #         # if cuts_present_here and not mu_dynamic_here:
+    #         #     for i in list(self.best_cut_multipliers.keys()):
+    #         #         self.best_cut_multipliers[i] = 0.0
+
+    #         # Ensure λ starts in a reasonable range (consistent with compute_modified_weights)
+    #         self.lmbda = max(0.0, min(getattr(self, "lmbda", 0.05), 1e4))
+
+    #         no_improvement_count = 0
+    #         polyak_enabled       = True
+
+    #         # Collect newly generated cuts at this node
+    #         node_new_cuts = []
+
+    #         # --- Quick guards ---
+    #         if not self.edge_list or self.num_nodes <= 1:
+    #             if self.verbose:
+    #                 print(f"Error at depth {depth}: Empty edge list or invalid graph")
+    #             end_time = time()
+    #             LagrangianMST.total_compute_time += end_time - start_time
+    #             return self.best_lower_bound, self.best_upper_bound, node_new_cuts
+
+    #         # Fixed / forbidden edges
+    #         F_in  = getattr(self, "fixed_edges", set())
+    #         F_out = getattr(self, "excluded_edges", set())
+    #         edge_idx = self.edge_indices
+
+    #         # Root: flag to delay separation until we see an MST that violates the budget
+    #         root_pending_sep = False
+
+    #         # ------------------------------------------------------------------
+    #         # 1) PRE-SEPARATION AT NODE START (dynamic cut-generation nodes only)
+    #         #    - Generate cuts only if REAL-weight MST violates the budget.
+    #         #    - At root, if real MST is feasible, delay separation to first
+    #         #      violating MST (under λ+μ) inside the subgradient iterations.
+    #         # ------------------------------------------------------------------
+    #         if cutting_active_here:
+    #             try:
+
+    #                 if depth ==0:
+    #                                         # Build MST with REAL weights only for cut generation
+    #                     modified_edges_real = [(0, 0, float(w)) for w in self.edge_weights]
+    #                     try:
+    #                        _, mst_len0, mst_edges0 = self.compute_mst(modified_edges_real)
+    #                     except Exception:
+    #                         # Fallback: use default (λ,μ)-priced MST if something goes wrong
+    #                         _, mst_len0, mst_edges0 = self.compute_mst()
+    #                 else:
+    #                     try:
+    #                         # This uses compute_modified_weights() internally, i.e. w + λ·ℓ + μ
+    #                         _, mst_len0, mst_edges0 = self.compute_mst()
+    #                     except Exception:
+    #                        _, mst_len0, mst_edges0 = float('inf'), float('inf'), []
+
+    #                 # NOTE: we do NOT set pre_mst_available here, because this MST
+    #                 # is not associated with the current λ, μ. It is used purely
+    #                 # for cut generation.
+    #                 if mst_len0 > self.budget:
+    #                     # Only now it makes sense to separate: MST violates knapsack
+    #                     cand_cuts = self.generate_cover_cuts(mst_edges0) or []
+
+    #                     T0 = set(mst_edges0)
+    #                     scored = []
+    #                     for cut, rhs in cand_cuts:
+    #                         S   = set(cut)
+    #                         lhs = len(T0 & S)
+    #                         violation = lhs - rhs
+    #                         if violation >= min_cut_violation_for_add:
+    #                             scored.append((violation, S, rhs))
+
+    #                     scored.sort(reverse=True, key=lambda t: t[0])
+
+
+    #                     available_slots = max(0, max_active_cuts - len(self.best_cuts))
+    #                     if available_slots > 0:
+    #                         scored = scored[:min(max_new_cuts_per_node, available_slots)]
+    #                     else:
+    #                         scored = []
+
+    #                     existing = {frozenset(c): rhs for (c, rhs) in self.best_cuts}
+
+    #                     for violation, S, rhs in scored:
+    #                         fz = frozenset(S)
+    #                         if fz in existing:
+    #                             old_rhs = existing[fz]
+    #                             if rhs < old_rhs:
+    #                                 idx = next(i for i, (c, r) in enumerate(self.best_cuts) if frozenset(c) == fz)
+    #                                 self.best_cuts[idx] = (set(S), rhs)
+    #                                 existing[fz] = rhs
+    #                             continue
+
+    #                         # new cut
+    #                         self.best_cuts.append((set(S), rhs))
+    #                         idx_new = len(self.best_cuts) - 1
+    #                         self.best_cut_multipliers[idx_new] = 0.00001
+    #                         self.best_cut_multipliers_for_best_bound[idx_new] = 0.00001
+    #                         node_new_cuts.append((set(S), rhs))
+
+
+    #                     cuts_present_here = self.use_cover_cuts and bool(self.best_cuts)
+
+    #                 else:
+    #                     # Real-weight pre-MST is feasible: at root we delay separation and wait
+    #                     # for a violating MST (under λ+μ) inside the subgradient iterations.
+    #                     if is_root:
+    #                         root_pending_sep = True
+
+    #             except Exception as e:
+    #                 if self.verbose:
+    #                     print(f"Error in pre-separation at depth {depth}: {e}")
+
+    #         # ------------------------------------------------------------------
+    #         # 2) Compute rhs_eff and detect infeasibility (fixed edges + cuts)
+    #         # ------------------------------------------------------------------
+    #         self._rhs_eff = {}
+    #         if self.use_cover_cuts and self.best_cuts:
+    #             for idx_c, (cut, rhs) in enumerate(self.best_cuts):
+    #                 rhs_eff = int(rhs) - len(cut & F_in)
+    #                 self._rhs_eff[idx_c] = rhs_eff
+    #                 if rhs_eff < 0:
+    #                     # fixed edges already violate this cut -> node infeasible
+    #                     end_time = time()
+    #                     LagrangianMST.total_compute_time += end_time - start_time
+    #                     return float('inf'), self.best_upper_bound, node_new_cuts
+
+    #         # ------------------------------------------------------------------
+    #         # 3) Trim number of cuts (keep at most max_active_cuts)
+    #         # ------------------------------------------------------------------
+    #         if self.use_cover_cuts and self.best_cuts and len(self.best_cuts) > max_active_cuts:
+    #             parent_mu_map = getattr(self, "best_cut_multipliers_for_best_bound", None)
+    #             if not parent_mu_map:
+    #                 parent_mu_map = self.best_cut_multipliers
+
+    #             idx_and_cut = list(enumerate(self.best_cuts))
+    #             idx_and_cut.sort(
+    #                 key=lambda ic: abs(parent_mu_map.get(ic[0], 0.0)),
+    #                 reverse=True
+    #             )
+    #             idx_and_cut = idx_and_cut[:max_active_cuts]
+
+    #             new_cuts_list = []
+    #             new_mu       = {}
+    #             new_mu_best  = {}
+    #             new_rhs_eff  = {}
+
+    #             for new_i, (old_i, cut_rhs) in enumerate(idx_and_cut):
+    #                 new_cuts_list.append(cut_rhs)
+    #                 new_mu[new_i]      = parent_mu_map.get(old_i, 0.0)
+    #                 new_mu_best[new_i] = parent_mu_map.get(old_i, 0.0)
+    #                 new_rhs_eff[new_i] = self._rhs_eff[old_i]
+
+    #             self.best_cuts                       = new_cuts_list
+    #             self.best_cut_multipliers            = new_mu
+    #             self.best_cut_multipliers_for_best_bound = new_mu_best
+    #             self._rhs_eff                        = new_rhs_eff
+
+    #         cuts_present_here = self.use_cover_cuts and bool(self.best_cuts)
+
+    #         # ------------------------------------------------------------------
+    #         # 4) Build cut -> edge index arrays (for pricing/subgradients)
+    #         # ------------------------------------------------------------------
+    #         def _rebuild_cut_structures():
+    #             nonlocal cut_edge_idx_free, cut_edge_idx_all, rhs_vec
+
+    #             cut_edge_idx_free = []
+    #             cut_edge_idx_all  = []
+
+    #             for cut, rhs in self.best_cuts:
+    #                 # Free indices (not fixed in/out)
+    #                 idxs_free = [
+    #                     edge_idx[e] for e in cut
+    #                     if (e not in F_in and e not in F_out) and (e in edge_idx)
+    #                 ]
+    #                 arr_free = (
+    #                     np.fromiter(idxs_free, dtype=np.int32)
+    #                     if idxs_free else np.empty(0, dtype=np.int32)
+    #                 )
+    #                 cut_edge_idx_free.append(arr_free)
+
+    #                 # All indices (for μ-subgradient)
+    #                 idxs_all = [edge_idx[e] for e in cut if e in edge_idx]
+    #                 arr_all  = (
+    #                     np.fromiter(idxs_all, dtype=np.int32)
+    #                     if idxs_all else np.empty(0, dtype=np.int32)
+    #                 )
+    #                 cut_edge_idx_all.append(arr_all)
+
+    #             # store for compute_modified_weights
+    #             self._cut_edge_idx      = cut_edge_idx_free
+    #             self._cut_edge_idx_all  = cut_edge_idx_all
+
+    #             if self.best_cuts:
+    #                 # rhs_eff_vec = np.array(
+    #                 #     [self._rhs_eff[i] for i in range(len(cut_edge_idx_free))],
+    #                 #     dtype=float
+    #                 # )
+    #                 rhs_vec = np.array(
+    #                     [rhs for (_, rhs) in self.best_cuts],
+    #                     dtype=float
+    #                 )
+
+    #             else:
+    #                 # rhs_eff_vec = np.zeros(0, dtype=float)
+    #                 rhs_vec     = np.zeros(0, dtype=float)
+
+
+    #         cut_edge_idx_free = []
+    #         cut_edge_idx_all  = []
+    #         # rhs_eff_vec       = np.zeros(0, dtype=float)
+    #         rhs_vec           = np.zeros(0, dtype=float)
+    #         if self.use_cover_cuts:
+    #             _rebuild_cut_structures()
+
+    #         # Track usefulness of cuts at this node
+    #         max_cut_violation = [0.0 for _ in self.best_cuts]
+
+    #         # Histories / caches
+    #         self._mw_cached = None
+    #         self._mw_lambda = None
+    #         self._mw_mu     = np.zeros(len(cut_edge_idx_free), dtype=float)
+
+    #         if not hasattr(self, "subgradients"):
+    #             self.subgradients = []
+    #         if not hasattr(self, "step_sizes"):
+    #             self.step_sizes = []
+    #         if not hasattr(self, "multipliers"):
+    #             self.multipliers = []
+
+    #         prev_weights   = None
+    #         prev_mst_edges = None
+    #         last_g_lambda  = None
+
+    #         if not hasattr(self, "_mst_mask") or self._mst_mask.size != len(self.edge_weights):
+    #             self._mst_mask = np.zeros(len(self.edge_weights), dtype=bool)
+    #         mst_mask = self._mst_mask
+
+    #         # Decide iteration limit for this node:
+    #         if is_root and cutting_active_here:
+    #             iter_limit = root_max_iter
+    #         else:
+    #             iter_limit = max_iter
+
+    #         # ------------------------------------------------------------------
+    #         # 5) Subgradient iterations
+    #         # ------------------------------------------------------------------
+    #         for iter_num in range(int(iter_limit)):
+    #             # 1) MST with current λ, μ
+
+    #             try:
+    #                 mst_cost, mst_length, mst_edges = self.compute_mst_incremental(prev_weights, prev_mst_edges)
+    #             except Exception:
+    #                 mst_cost, mst_length, mst_edges = self.compute_mst()
+
+    #             self.last_mst_edges = mst_edges
+    #             prev_mst_edges      = mst_edges
+
+    #             # 1a) ONE-SHOT delayed separation at root:
+    #             #     If pre-separation didn't create cuts because REAL MST was feasible,
+    #             #     wait until we see a violating MST at the root, then separate once
+    #             #     (now using λ+μ-priced MST).
+    #             if (
+    #                 is_root
+    #                 and cutting_active_here
+    #                 and root_pending_sep
+    #                 and len(self.best_cuts) < max_active_cuts
+    #                 and mst_length > self.budget
+    #             ):
+    #                 try:
+    #                     cand_cuts_loop = self.generate_cover_cuts(mst_edges) or []
+
+    #                     T_loop = set(mst_edges)
+    #                     scored_loop = []
+    #                     for cut, rhs in cand_cuts_loop:
+    #                         S   = set(cut)
+    #                         lhs = len(T_loop & S)
+    #                         violation = lhs - rhs
+    #                         if violation >= min_cut_violation_for_add:
+    #                             scored_loop.append((violation, S, rhs))
+
+    #                     scored_loop.sort(reverse=True, key=lambda t: t[0])
+
+    #                     remaining_slots = max(0, max_active_cuts - len(self.best_cuts))
+    #                     if remaining_slots > 0:
+    #                         scored_loop = scored_loop[:min(max_new_cuts_per_node, remaining_slots)]
+    #                     else:
+    #                         scored_loop = []
+
+    #                     existing = {frozenset(c): rhs for (c, rhs) in self.best_cuts}
+    #                     added_any = False
+
+    #                     for violation, S, rhs in scored_loop:
+    #                         fz = frozenset(S)
+    #                         if fz in existing:
+    #                             continue
+    #                         self.best_cuts.append((set(S), rhs))
+    #                         new_idx = len(self.best_cuts) - 1
+    #                         self.best_cut_multipliers[new_idx] = 0.00001
+    #                         self.best_cut_multipliers_for_best_bound[new_idx] = 0.00001
+    #                         self._rhs_eff[new_idx] = int(rhs) - len(set(S) & F_in)
+    #                         max_cut_violation.append(0.0)
+    #                         node_new_cuts.append((set(S), rhs))
+    #                         added_any = True
+
+    #                     if added_any:
+    #                         _rebuild_cut_structures()
+    #                         self._mw_cached = None
+    #                         self._mw_mu     = np.zeros(len(cut_edge_idx_free), dtype=float)
+
+    #                 except Exception as e:
+    #                     if self.verbose:
+    #                         print(f"Error in root delayed separation at depth {depth}, iter {iter_num}: {e}")
+    #                 finally:
+    #                     # Do this at most once at the root
+    #                     root_pending_sep = False
+
+    #             # Prepare weights for next iteration (cache)
+    #             # prev_weights = self.compute_modified_weights()
+    #             prev_weights = getattr(self, "_last_mw", prev_weights)
+
+
+    #             # 2) Primal & UB
+    #             is_feasible = (mst_length <= self.budget)
+    #             self._record_primal_solution(self.last_mst_edges, is_feasible)
                 
-                # Linear interpolation (secant method)
-                if abs(S_max - S_min) > 1e-8:
-                    lambda_new = lambda_min - S_min * (lambda_max - lambda_min) / (S_max - S_min)
-                    lambda_new = max(lambda_min, min(lambda_new, lambda_max))
-                else:
-                    lambda_new = (lambda_min + lambda_max) / 2
+    #             if is_feasible:
+    #                 try:
+    #                     real_weight, real_length = self.compute_real_weight_length()
+    #                     if (
+    #                         not math.isnan(real_weight)
+    #                         and not math.isinf(real_weight)
+    #                         and real_weight < self.best_upper_bound
+    #                     ):
+    #                         self.best_upper_bound = real_weight
+    #                 except Exception as e:
+    #                     if self.verbose:
+    #                         print(f"Error updating primal solution: {e}")
+
+    #             if len(self.primal_solutions) > MAX_SOLUTIONS:
+    #                 # self.primal_solutions = self.primal_solutions[-MAX_SOLUTIONS:]
+    #                 self.primal_solutions = self.primal_solutions[-MAX_SOLUTIONS:]
+    #                 # self.step_sizes       = self.step_sizes[-MAX_SOLUTIONS:]
+
+    #             # 3) Dual value: L(λ, μ) = MST_cost - λ B - Σ μ_i rhs_i
+    #             # IMPORTANT: use λ and μ in the SAME clamped form as compute_modified_weights
+    #             lam_for_dual = max(0.0, min(self.lmbda, 1e4))
+
+    #             if self.use_cover_cuts and len(rhs_vec) > 0:
+    #                 mu_vec = np.fromiter(
+    #                     (
+    #                         max(0.0, min(self.best_cut_multipliers.get(i, 0.0), 1e4))
+    #                         for i in range(len(rhs_vec))
+    #                     ),
+    #                     dtype=float,
+    #                     count=len(rhs_vec),
+    #                 )
+    #                 cover_cut_penalty = float(mu_vec @ rhs_vec)
+    #             else:
+    #                 mu_vec = np.zeros(len(rhs_vec), dtype=float)
+    #                 cover_cut_penalty = 0.0
+
+    #             lagrangian_bound = mst_cost - lam_for_dual * self.budget - cover_cut_penalty
                 
-                self.lmbda = max(1e-4, min(lambda_new, 1e4))
-                if self.lmbda < 1e-6:
-                    self.lmbda = 0.1
                 
-                # Compute MST
-                try:
-                    if prev_weights is not None and prev_mst_edges is not None:
-                        mst_cost, mst_length, mst_edges = self.compute_mst_incremental(prev_weights, prev_mst_edges)
-                    else:
-                        mst_cost, mst_length, mst_edges = self.compute_mst()
-                    if math.isnan(mst_cost) or math.isinf(mst_cost) or math.isnan(mst_length) or math.isinf(mst_length):
-                        raise ValueError(f"MST computation failed: cost={mst_cost}, length={mst_length}")
-                    self.last_mst_edges = [tuple(sorted((u, v))) for u, v in mst_edges]
-                except Exception as e:
-                    if self.verbose:
-                        print(f"Bisection Iter {iter_num} (depth {depth}): MST computation failed: {e}")
-                    break
+    #             if (
+    #                 not math.isnan(lagrangian_bound)
+    #                 and not math.isinf(lagrangian_bound)
+    #                 and abs(lagrangian_bound) < 1e10
+    #             ):
+    #                 if lagrangian_bound > self.best_lower_bound + 1e-6:
+    #                     self.best_lower_bound = lagrangian_bound
+    #                     self.best_lambda      = lam_for_dual
+    #                     self.best_mst_edges   = self.last_mst_edges
+    #                     self.best_cost        = mst_cost
+    #                     self.best_cut_multipliers_for_best_bound = self.best_cut_multipliers.copy()
+    #                     no_improvement_count  = 0
+    #                 else:
+    #                     no_improvement_count += 1
+    #                     if no_improvement_count % CLEANUP_INTERVAL == 0:
+    #                         self.primal_solutions = self.primal_solutions[-MAX_SOLUTIONS:]
+    #             else:
+    #                 no_improvement_count += 1
+
+    #             # 4) Subgradients
+    #             knapsack_subgradient = float(mst_length - self.budget)
+
+    #             if cuts_present_here and mu_dynamic_here and len(cut_edge_idx_all) > 0:
+    #                 mst_mask[:] = False
+    #                 for e in mst_edges:
+    #                     j = self.edge_indices.get(e)
+    #                     if j is not None:
+    #                         mst_mask[j] = True
+
+    #                 violations = []
+    #                 for i, idxs_all in enumerate(cut_edge_idx_all):
+    #                     lhs_i = int(mst_mask[idxs_all].sum()) if idxs_all.size else 0
+    #                     g_i   = lhs_i - rhs_vec[i]
+    #                     violations.append(g_i)
+    #                     if g_i > max_cut_violation[i]:
+    #                         max_cut_violation[i] = g_i
+    #                 violations       = np.array(violations, dtype=float)
+    #                 cut_subgradients = violations.tolist()
+    #             else:
+    #                 cut_subgradients = []
+
+    #             self.subgradients.append(knapsack_subgradient)
+    #             norm_sq = knapsack_subgradient ** 2
+    #             for g in cut_subgradients:
+    #                 norm_sq += g ** 2
+
+    #             # Polyak step size
+    #             if polyak_enabled and self.best_upper_bound < float('inf') and norm_sq > 0.0:
+    #                 gap   = max(0.0, self.best_upper_bound - lagrangian_bound)
+    #                 theta = gamma_base
+
+    #                 alpha = theta * gap / (norm_sq + eps)
+
+    #             else:
+    #                 alpha = getattr(self, "step_size", 1e-3)
+
+
+    #             # λ update with momentum, then clamp it
+    #             v_prev = getattr(self, "_v_lambda", 0.0)
+    #             v_new  = self.momentum_beta * v_prev + (1.0 - self.momentum_beta) * knapsack_subgradient
+    #             self._v_lambda = v_new
+    #             self.lmbda     = self.lmbda + alpha * v_new
                 
-                prev_mst_edges = self.last_mst_edges
-                prev_weights = self.compute_modified_weights()
+    #             if self.lmbda < 0.0:
+    #                 self.lmbda = 0.0
+    #             if self.lmbda > 1e4:
+    #                 self.lmbda = 1e4
 
-                # Store best dual solution
-                is_feasible = mst_length <= self.budget
-                # self.primal_solutions.append((self.last_mst_edges, is_feasible))
-                self._record_primal_solution(self.last_mst_edges, is_feasible)
+    #             # μ updates only at μ-dynamic nodes, then clamp them
+    #             if mu_dynamic_here and len(cut_subgradients) > 0:
+    #                 for i, g in enumerate(cut_subgradients):
+    #                     delta = gamma_mu * alpha * g
+    #                     # print("ff",g)
+    #                     if mu_increment_cap is not None:
+    #                         if delta > mu_increment_cap:
+    #                             delta = mu_increment_cap
+    #                         elif delta < -mu_increment_cap:
+    #                             delta = -mu_increment_cap
+
+    #                     mu_old = self.best_cut_multipliers.get(i, 0.0)
+    #                     mu_new = mu_old + delta
+    #                     if mu_new < 0.0:
+    #                         mu_new = 0.0
+    #                     if mu_new > 1e4:
+    #                         mu_new = 1e4
+    #                     self.best_cut_multipliers[i] = mu_new
+    #                     # print("self.gg", self.best_cut_multipliers)
+
+    #             self.step_sizes.append(alpha)
+    #             self.multipliers.append((self.lmbda, self.best_cut_multipliers.copy()))
+
+    #             # stagnation check for λ
+    #             if last_g_lambda is not None and abs(knapsack_subgradient - last_g_lambda) < 1e-6:
+    #                 self.consecutive_same_subgradient = getattr(self, 'consecutive_same_subgradient', 0) + 1
+    #                 if self.consecutive_same_subgradient > 10:
+    #                     # Only allow stagnation termination if:
+    #                     # - not at root, or
+    #                     # - at root but we are no longer waiting for a violating MST
+    #                     if not (is_root and root_pending_sep and cutting_active_here and self.use_cover_cuts):
+    #                         if self.verbose:
+    #                             print("Terminating early: subgradient stagnation")
+    #                         break
+    #                 current_step = getattr(self, "step_size", 1e-3)
+    #                 self.step_size = max(1e-8, current_step * 0.7)
+    #             else:
+    #                 self.consecutive_same_subgradient = 0
+    #             last_g_lambda = knapsack_subgradient
+
+    #             if self.verbose and iter_num % 10 == 0:
+    #                 print(
+    #                     f"Subgrad Iter {iter_num}: λ={self.lmbda:.6f}, "
+    #                     f"len={mst_length:.2f}, gλ={knapsack_subgradient:.2f}, "
+    #                     f"cuts={len(self.best_cuts)}"
+    #                 )
                 
-                cover_cut_penalty = sum(
-                    multiplier * (sum(1 for e in self.last_mst_edges if e in cut) - rhs)
-                    for cut_idx, (cut, rhs) in enumerate(self.best_cuts)
-                    for multiplier in [self.best_cut_multipliers.get(cut_idx, 0)]
-                )
-                lagrangian_bound = mst_cost - self.lmbda * self.budget - cover_cut_penalty
 
-                                # Compute subgradients
-                knapsack_subgradient = mst_length - self.budget
-                knapsack_subgradient = max(-1e4, min(knapsack_subgradient, 1e4))
-                cut_subgradients = [
-                    sum(1 for e in self.last_mst_edges if e in cut) - rhs
-                    for cut, rhs in self.best_cuts
-                ]
+    #         # ------------------------------------------------------------------
+    #         # 6) Drop "dead" cuts globally (never violated & μ tiny historically)
+    #         #     - now more conservative: drop only if
+    #         #       * never violated here
+    #         #       * AND both current and historical μ are tiny
+    #         # ------------------------------------------------------------------
+    #         if self.use_cover_cuts and self.best_cuts:
+    #             keep_indices = []
 
-                # Validate lagrangian_bound
-                if not math.isnan(lagrangian_bound) and not math.isinf(lagrangian_bound):
-                    if lagrangian_bound > self.best_lower_bound:
-                        self.best_lower_bound = lagrangian_bound
-                        self.best_lambda = self.lmbda
-                        self.best_mst_edges = self.last_mst_edges
-                        self.best_cost = mst_cost
-                        self.best_cut_multipliers_for_best_bound = self.best_cut_multipliers.copy()
-                        no_improvement_count = 0
-                    else:
-                        no_improvement_count += 1
-                else:
-                    if self.verbose:
-                        print(f"Bisection Iter {iter_num} (depth {depth}): Invalid lagrangian_bound={lagrangian_bound}")
-                    no_improvement_count += 1
+    #             parent_mu_map = getattr(
+    #                 self,
+    #                 "best_cut_multipliers_for_best_bound",
+    #                 self.best_cut_multipliers,
+    #             )
 
-                # Update primal solution
-                if is_feasible:
-                    uf = UnionFind(self.num_nodes)
-                    for u, v in self.last_mst_edges:
-                        uf.union(u, v)
-                    if uf.count_components() == 1:
-                        real_weight, real_length = self.compute_real_weight_length()
-                        if not math.isnan(real_weight) and not math.isinf(real_weight) and real_weight < self.best_upper_bound:
-                            self.best_upper_bound = real_weight
-                            self._moving_upper = 0.95 * self._moving_upper + 0.05 * self.best_upper_bound
+    #             for i, (cut, rhs) in enumerate(self.best_cuts):
+    #                 mu_i    = float(self.best_cut_multipliers.get(i, 0.0))
+    #                 mu_hist = float(parent_mu_map.get(i, 0.0))
 
-                # Compute fractional LP solution
-                try:
-                    fractional_solution = self.compute_dantzig_wolfe_solution(None)
-                    if fractional_solution:
-                        # self.fractional_solutions.append(fractional_solution)
-                        self._record_fractional_solution(fractional_solution)
-                except Exception as e:
-                    if self.verbose:
-                        print(f"Bisection Iter {iter_num} (depth {depth}): Dantzig-Wolfe failed: {e}")
+    #                 ever_useful = (i < len(max_cut_violation) and max_cut_violation[i] > 0.0) \
+    #                             or (abs(mu_hist) >= dead_mu_threshold)
 
-                # Check stagnation
-                if no_improvement_count > 15:
-                    if self.verbose:
-                        print(f"Bisection terminated early due to no improvement for {no_improvement_count} iterations (depth {depth})")
-                    break
+    #                 # Only drop if never useful AND both current and historical μ are tiny
+    #                 if (not ever_useful) and abs(mu_i) < dead_mu_threshold and abs(mu_hist) < dead_mu_threshold:
+    #                     continue
+    #                 keep_indices.append(i)
 
-            
+    #             if len(keep_indices) < len(self.best_cuts):
+    #                 new_best_cuts = []
+    #                 new_mu        = {}
+    #                 new_mu_best   = {}
+    #                 new_rhs_eff   = {}
 
+    #                 for new_idx, old_idx in enumerate(keep_indices):
+    #                     new_best_cuts.append(self.best_cuts[old_idx])
+    #                     new_mu[new_idx]      = float(self.best_cut_multipliers.get(old_idx, 0.0))
+    #                     new_mu_best[new_idx] = float(
+    #                         self.best_cut_multipliers_for_best_bound.get(old_idx, 0.0)
+    #                     )
+    #                     new_rhs_eff[new_idx] = self._rhs_eff[old_idx]
 
+    #                 self.best_cuts                       = new_best_cuts
+    #                 self.best_cut_multipliers            = new_mu
+    #                 self.best_cut_multipliers_for_best_bound = new_mu_best
+    #                 self._rhs_eff                        = new_rhs_eff
 
-                # Update interval
-                if knapsack_subgradient > 0:
-                    lambda_min = self.lmbda
-                    S_min = knapsack_subgradient
-                else:
-                    lambda_max = self.lmbda
-                    S_max = knapsack_subgradient
+    #         # ------------------------------------------------------------------
+    #         # 7) Restore best (λ, μ) to pass to children
+    #         # ------------------------------------------------------------------
+    #         if hasattr(self, "best_lambda"):
+    #             self.lmbda = self.best_lambda
 
-                # Update cut multipliers with hybrid Polyak/Decay
-                self.multipliers.append(self.lmbda)
-                self.step_sizes.append(self.step_size)
-                
-                if self.verbose:
-                    print(f"Bisection Iter {iter_num} (depth {depth}): lambda={self.lmbda:.6f}, "
-                        f"interval={lambda_max - lambda_min:.6f}, subgradient={knapsack_subgradient:.6f}")
+    #         if mu_dynamic_here and hasattr(self, "best_cut_multipliers_for_best_bound"):
+    #             self.best_cut_multipliers = self.best_cut_multipliers_for_best_bound.copy()
+    #         # elif not mu_dynamic_here:
+    #         #     # keep μ = 0 for deep nodes
+    #         #     for i in list(self.best_cut_multipliers.keys()):
+    #         #         self.best_cut_multipliers[i] = 0.0
 
-                gamma = 0.1
-                current_L = lagrangian_bound
-                gap = max(1e-6, self._moving_upper - current_L) if self._moving_upper < float('inf') else 1.0
-                knapsack_norm_sq = max(1e-10, knapsack_subgradient ** 2)
-                cut_norm_sq = max(1e-10, sum(g ** 2 for g in cut_subgradients))
-                
-                if polyak_enabled and gap > 1e-6 and cut_norm_sq > 1e-10:
-                    polyak_cut_step = gamma * gap / cut_norm_sq
-                    polyak_cut_step = max(1e-8, min(polyak_cut_step, self.step_size * 2))
-                    
-                    for cut_idx, violation in enumerate(cut_subgradients):
-                        current_mult = self.best_cut_multipliers.get(cut_idx, 0)
-                        violation = max(-1e8, min(violation, 1e4))
-                        new_mult = max(1e-10, current_mult + polyak_cut_step * violation)
-                        if new_mult < 1e-6 and abs(violation) > 1.0:
-                            new_mult = 0.001
-                        self.best_cut_multipliers[cut_idx] = min(new_mult, 1e4)
-                    
-                    if self.verbose:
-                        print(f"Polyak cut step: {polyak_cut_step:.6f} (depth {depth})")
-                else:
-                    polyak_enabled = False
-                    self.step_size *= self.p
-                    for cut_idx, violation in enumerate(cut_subgradients):
-                        current_mult = self.best_cut_multipliers.get(cut_idx, 0)
-                        violation = max(-1e4, min(violation, 1e4))
-                        new_mult = max(1e-4, current_mult + self.step_size * violation)
-                        if new_mult < 1e-6 and abs(violation) > 1.0:
-                            new_mult = 0.001
-                        self.best_cut_multipliers[cut_idx] = min(new_mult, 1e4)
-                    
-                    if self.verbose:
-                        print(f"Switched to decay for cuts (depth {depth})")
+    #         end_time = time()
+    #         LagrangianMST.total_compute_time += end_time - start_time
+    #         return self.best_lower_bound, self.best_upper_bound, node_new_cuts
+        
 
-                # Check convergence
-                converged = (abs(knapsack_subgradient) < subgradient_tolerance and 
-                            all(abs(g) < subgradient_tolerance for g in cut_subgradients))
-                duality_gap = self.best_upper_bound - self.best_lower_bound if self.best_upper_bound < float('inf') else float('inf')
-                subgrad_norm = math.sqrt(knapsack_subgradient ** 2 + sum(g ** 2 for g in cut_subgradients))
-                
-                if converged or duality_gap < 1e-5 or subgrad_norm < 1e-5:
-                    if self.verbose:
-                        print(f"Converged! (Reason: {'Converged' if converged else 'Small duality gap' if duality_gap < 1e-5 else 'Small subgrad norm'}, depth {depth})")
-                    break
-
-                iter_num += 1
-
-            # Final subgradient polish
-            try:
-                knapsack_subgradient = mst_length - self.budget
-                knapsack_subgradient = max(-1e4, min(knapsack_subgradient, 1e4))
-                cut_subgradients = [
-                    sum(1 for e in self.last_mst_edges if e in cut) - rhs
-                    for cut, rhs in self.best_cuts
-                ]
-                self.lmbda = max(1e-4, min(self.lmbda + self.step_size * knapsack_subgradient, 1e4))
-                if self.lmbda < 1e-6 and abs(knapsack_subgradient) > 1.0:
-                    self.lmbda = 0.1
-                for cut_idx, violation in enumerate(cut_subgradients):
-                    current_mult = self.best_cut_multipliers.get(cut_idx, 0)
-                    violation = max(-1e4, min(violation, 1e4))
-                    new_mult = max(1e-4, current_mult + self.step_size * violation)
-                    if new_mult < 1e-6 and abs(violation) > 1.0:
-                        new_mult = 0.001
-                    self.best_cut_multipliers[cut_idx] = min(new_mult, 1e4)
-            except NameError:
-                if self.verbose:
-                    print(f"Warning: Final polish skipped due to undefined mst_length (depth {depth})")
-                pass
-         
-
-    
-
-        else:  # Subgradient method with Polyak hybrid + pre- & in-loop separation (with depth-based freezing, no new constants) badak nabod
-            import numpy as np
-            import math
-
+        else:  # Subgradient method with Polyak hybrid + cover cuts (λ, μ), depth-based freezing, and saying that is consitent with modified weight
+       # increasing the number of iterations in the root, asliiiiiiiiiii tariiiiiiiiiiiin asliiiiiiiiiitarin with early stop
             # --- Tunables / safety limits ---
-            MAX_SOLUTIONS = 50
-            CLEANUP_INTERVAL = 100
-            max_iter = min(self.max_iter, 200)  # unchanged
+            import numpy as np
 
-            # Polyak / momentum hyperparams (for λ)
+            MAX_SOLUTIONS    = getattr(self, "max_primal_solutions", 50)
+            CLEANUP_INTERVAL = getattr(self, "cleanup_interval", 100)
+            max_iter         = min(self.max_iter, 200)
+
+            # NEW: how many iterations we tolerate with no LB improvement
+            max_no_improvement = getattr(self, "max_no_improvement", 50)
+            min_iters_before_early_stop = getattr(self, "min_iters_before_early_stop", 5)
+
+            # Polyak / momentum for λ
             self.momentum_beta = getattr(self, "momentum_beta", 0.9)
-            gamma_base = 0.10
+            gamma_base         = getattr(self, "gamma_base", 0.1)
 
-            # μ updates: conservative
-            gamma_mu = getattr(self, "gamma_mu", 0.30)            # unchanged
+            # μ update parameters (you can tune these later if needed)
+            gamma_mu         = getattr(self, "gamma_mu", 0.30)
             mu_increment_cap = getattr(self, "mu_increment_cap", 1.0)
-            dead_mu_threshold = getattr(self, "dead_mu_threshold", 1e-6)
-            eps = 1e-12
+            eps              = 1e-12
 
-            # ------------------------------------------------------------------
-            # Depth-based cutting policy
-            # ------------------------------------------------------------------
-            max_cut_depth = getattr(self, "max_cut_depth", 1)
+            # Depth-based behaviour
+            max_cut_depth = getattr(self, "max_cut_depth", 3)                 # where we ADD cuts
+            max_mu_depth  = getattr(self, "max_mu_depth", 5)      # where we UPDATE μ / use cuts in dual
+            is_root       = (depth == 0)
 
-            # Ensure cut data structures exist
+            # Node-level separation parameters
+            max_active_cuts           = getattr(self, "max_active_cuts", 5)
+            max_new_cuts_per_node     = getattr(self, "max_new_cuts_per_node", 5)
+            min_cut_violation_for_add = getattr(self, "min_cut_violation_for_add", 1.0)
+            dead_mu_threshold         = getattr(self, "dead_mu_threshold", 1e-6)
+
+            # Extra iterations allowed at root while we haven't seen a violating MST
+            root_max_iter = int(getattr(self, "root_max_iter", max_iter * 2))
+
+            # Ensure cut structures exist
             if not hasattr(self, "best_cuts"):
-                self.best_cuts = []
+                self.best_cuts = []   # list of (set(edges), rhs)
             if not hasattr(self, "best_cut_multipliers"):
-                self.best_cut_multipliers = {}
+                self.best_cut_multipliers = {}  # μ_i for each cut
             if not hasattr(self, "best_cut_multipliers_for_best_bound"):
-                self.best_cut_multipliers_for_best_bound = {}
+                self.best_cut_multipliers_for_best_bound = {}  # μ at best LB
 
-            existing_cuts = self.best_cuts
-            cutting_active_here = self.use_cover_cuts and (depth <= max_cut_depth)
-            cuts_present_here = self.use_cover_cuts and bool(existing_cuts)
+            # Which behaviour at this node?
+            cutting_active_here = self.use_cover_cuts and (depth <= max_cut_depth)   # can ADD cuts
+            mu_dynamic_here     = self.use_cover_cuts and (depth <= max_mu_depth)    # can UPDATE μ / use in dual
+            cuts_present_here   = self.use_cover_cuts and bool(self.best_cuts)
 
-            # FAST-PATH: no cuts globally, or no cuts here (deep node with no inherited cuts)
-            no_cuts_here = (not self.use_cover_cuts) or (not cutting_active_here and not cuts_present_here)
+            # Ensure λ starts in a reasonable range (consistent with compute_modified_weights)
+            self.lmbda = max(0.0, min(getattr(self, "lmbda", 0.05), 1e4))
 
-            # ------------------------------------------------------------------
-            # Graph sanity guard
-            # ------------------------------------------------------------------
+            no_improvement_count = 0
+            polyak_enabled       = True
+
+            # Collect newly generated cuts at this node
+            node_new_cuts = []
+
+            # --- Quick guards ---
             if not self.edge_list or self.num_nodes <= 1:
                 if self.verbose:
                     print(f"Error at depth {depth}: Empty edge list or invalid graph")
                 end_time = time()
                 LagrangianMST.total_compute_time += end_time - start_time
-                return self.best_lower_bound, self.best_upper_bound, []
+                return self.best_lower_bound, self.best_upper_bound, node_new_cuts
 
-            # Prepare fixed/excluded sets & edge index
-            F_in = getattr(self, "fixed_edges", set())    # normalized tuples
-            F_out = getattr(self, "forbidden_edges", set()) if hasattr(self, "forbidden_edges") else set()
+            # Fixed / forbidden edges
+            F_in  = getattr(self, "fixed_edges", set())
+            F_out = getattr(self, "excluded_edges", set())
             edge_idx = self.edge_indices
 
-            # ------------------------------------------------------------------
-            # 0) PURE λ-ONLY SUBGRADIENT FAST PATH (no cuts relevant)
-            # ------------------------------------------------------------------
-            if no_cuts_here:
-                # No cuts in the dual: run a compact λ-only subgradient method.
-                no_improvement_count = 0
-                polyak_enabled = True
-
-                if not hasattr(self, "subgradients"):
-                    self.subgradients = []
-                if not hasattr(self, "step_sizes"):
-                    self.step_sizes = []
-                if not hasattr(self, "multipliers"):
-                    self.multipliers = []
-
-                prev_weights = None
-                prev_mst_edges = None
-                last_g_lambda = None
-                iter_num = 0
-
-                while iter_num < max_iter:
-                    # 1) Solve MST on current priced weights
-                    if prev_weights is None:
-                        prev_weights = self.compute_modified_weights()
-                    try:
-                        mst_cost, mst_length, mst_edges = self.compute_mst_incremental(prev_weights, prev_mst_edges)
-                    except Exception:
-                        mst_cost, mst_length, mst_edges = self.compute_mst()
-
-                    self.last_mst_edges = mst_edges
-                    prev_mst_edges = mst_edges
-
-                    # Prepare weights for next iteration
-                    prev_weights = self.compute_modified_weights()
-
-                    # 2) Primal & UB
-                    is_feasible = (mst_length <= self.budget)
-                    self._record_primal_solution(self.last_mst_edges, is_feasible)
-
-                    if is_feasible:
-                        try:
-                            real_weight, real_length = self.compute_real_weight_length()
-                            if (not math.isnan(real_weight)
-                                    and not math.isinf(real_weight)
-                                    and real_weight < self.best_upper_bound):
-                                self.best_upper_bound = real_weight
-                        except Exception as e:
-                            if self.verbose:
-                                print(f"Error updating primal solution: {e}")
-
-                    # prune primal_solutions history
-                    if len(self.primal_solutions) > MAX_SOLUTIONS:
-                        self.primal_solutions = self.primal_solutions[-MAX_SOLUTIONS:]
-
-                    # 3) Dual value (no cover cuts)
-                    lagrangian_bound = mst_cost - self.lmbda * self.budget
-
-                    if (not math.isnan(lagrangian_bound)
-                            and not math.isinf(lagrangian_bound)
-                            and abs(lagrangian_bound) < 1e10):
-                        if lagrangian_bound > self.best_lower_bound + 1e-6:
-                            self.best_lower_bound = lagrangian_bound
-                            self.best_lambda = self.lmbda
-                            self.best_mst_edges = self.last_mst_edges
-                            self.best_cost = mst_cost
-                            no_improvement_count = 0
-                        else:
-                            no_improvement_count += 1
-                            if no_improvement_count % CLEANUP_INTERVAL == 0:
-                                self.primal_solutions = self.primal_solutions[-MAX_SOLUTIONS:]
-                    else:
-                        no_improvement_count += 1
-
-                    # 4) Subgradient & λ-update (Polyak + momentum)
-                    knapsack_subgradient = float(mst_length - self.budget)
-                    self.subgradients.append(knapsack_subgradient)
-
-                    norm_sq = knapsack_subgradient ** 2
-
-                    if polyak_enabled and self.best_upper_bound < float('inf') and norm_sq > 0.0:
-                        gap = max(0.0, self.best_upper_bound - lagrangian_bound)
-                        theta = gamma_base
-                        alpha = theta * gap / (norm_sq + eps)
-                    else:
-                        alpha = getattr(self, "step_size", 1e-5)
-
-                    v_prev = getattr(self, "_v_lambda", 0.0)
-                    v_new = self.momentum_beta * v_prev + (1.0 - self.momentum_beta) * knapsack_subgradient
-                    self._v_lambda = v_new
-                    self.lmbda = max(0.0, self.lmbda + alpha * v_new)
-
-                    self.step_sizes.append(alpha)
-                    self.multipliers.append((self.lmbda, {}))
-
-                    # λ stagnation check
-                    if last_g_lambda is not None and abs(knapsack_subgradient - last_g_lambda) < 1e-6:
-                        self.consecutive_same_subgradient = getattr(self, 'consecutive_same_subgradient', 0) + 1
-                        if self.consecutive_same_subgradient > 10:
-                            if self.verbose:
-                                print("Terminating early (no-cuts mode): subgradient stagnation")
-                            break
-                        current_step = getattr(self, "step_size", 1e-5)
-                        self.step_size = max(1e-8, current_step * 0.7)
-                    else:
-                        self.consecutive_same_subgradient = 0
-                    last_g_lambda = knapsack_subgradient
-
-                    if self.verbose and iter_num % 10 == 0:
-                        print(f"[No-cuts] Subgrad Iter {iter_num}: λ={self.lmbda:.6f}, "
-                              f"len={mst_length:.2f}, gλ={knapsack_subgradient:.2f}")
-
-                    iter_num += 1
-
-                end_time = time()
-                LagrangianMST.total_compute_time += end_time - start_time
-                return self.best_lower_bound, self.best_upper_bound, []
+            # Root: flag to delay separation until we see an MST that violates the budget
+            root_pending_sep = False
 
             # ------------------------------------------------------------------
-            # 1) CUT-AWARE PATH (dynamic or frozen cuts)
+            # 1) PRE-SEPARATION AT NODE START (dynamic cut-generation nodes only)
             # ------------------------------------------------------------------
-
-            # Within this node:
-            # - dynamic: we may generate cuts and update μ
-            # - present: we have cuts in the dual (for pricing), even if frozen
-            cuts_dynamic_here = self.use_cover_cuts and cutting_active_here
-            cuts_present_here = self.use_cover_cuts and bool(self.best_cuts)
-
-            no_improvement_count = 0
-            polyak_enabled = True
-
-            # Collect new cuts generated at THIS node (pre + in-loop) to return
-            node_new_cuts = []
-
-            # Will store MST from pre-separation to reuse in iter 0
-            pre_mst_available = False
-            pre_mst_cost = None
-            pre_mst_length = None
-            pre_mst_edges = None
-
-            # ------------------------------------------------------------------
-            # 2) PRE-SEPARATION AT NODE START (only warm-start MST now)
-            # ------------------------------------------------------------------
-            if cuts_dynamic_here:
+            if cutting_active_here:
                 try:
-                    w0 = self.compute_modified_weights()
-                    try:
-                        mst_cost0, mst_len0, mst_edges0 = self.compute_mst_incremental(w0, None)
-                    except Exception:
-                        mst_cost0, mst_len0, mst_edges0 = self.compute_mst()
 
-                    pre_mst_available = True
-                    pre_mst_cost = mst_cost0
-                    pre_mst_length = mst_len0
-                    pre_mst_edges = mst_edges0
+                    if depth ==0:
+                                            # Build MST with REAL weights only for cut generation
+                        modified_edges_real = [(0, 0, float(w)) for w in self.edge_weights]
+                        try:
+                           _, mst_len0, mst_edges0 = self.compute_mst(modified_edges_real)
+                        except Exception:
+                            # Fallback: use default (λ,μ)-priced MST if something goes wrong
+                            _, mst_len0, mst_edges0 = self.compute_mst()
+                    else:
+                        try:
+                            # This uses compute_modified_weights() internally, i.e. w + λ·ℓ + μ
+                            _, mst_len0, mst_edges0 = self.compute_mst()
+                        except Exception:
+                           _, mst_len0, mst_edges0 = float('inf'), float('inf'), []
+
+                    if mst_len0 > self.budget:
+                        # Only now it makes sense to separate: MST violates knapsack
+                        cand_cuts = self.generate_cover_cuts(mst_edges0) or []
+
+                        T0 = set(mst_edges0)
+                        scored = []
+                        for cut, rhs in cand_cuts:
+                            S   = set(cut)
+                            lhs = len(T0 & S)
+                            violation = lhs - rhs
+                            if violation >= min_cut_violation_for_add:
+                                scored.append((violation, S, rhs))
+
+                        scored.sort(reverse=True, key=lambda t: t[0])
+
+                        available_slots = max(0, max_active_cuts - len(self.best_cuts))
+                        if available_slots > 0:
+                            scored = scored[:min(max_new_cuts_per_node, available_slots)]
+                        else:
+                            scored = []
+
+                        existing = {frozenset(c): rhs for (c, rhs) in self.best_cuts}
+
+                        for violation, S, rhs in scored:
+                            fz = frozenset(S)
+                            if fz in existing:
+                                old_rhs = existing[fz]
+                                if rhs < old_rhs:
+                                    idx = next(i for i, (c, r) in enumerate(self.best_cuts) if frozenset(c) == fz)
+                                    self.best_cuts[idx] = (set(S), rhs)
+                                    existing[fz] = rhs
+                                continue
+
+                            # new cut
+                            self.best_cuts.append((set(S), rhs))
+                            idx_new = len(self.best_cuts) - 1
+                            self.best_cut_multipliers[idx_new] = 0.00001
+                            self.best_cut_multipliers_for_best_bound[idx_new] = 0.00001
+                            node_new_cuts.append((set(S), rhs))
+
+                        cuts_present_here = self.use_cover_cuts and bool(self.best_cuts)
+
+                    else:
+                        # Real-weight pre-MST is feasible: at root we delay separation and wait
+                        # for a violating MST (under λ+μ) inside the subgradient iterations.
+                        if is_root:
+                            root_pending_sep = True
 
                 except Exception as e:
                     if self.verbose:
                         print(f"Error in pre-separation at depth {depth}: {e}")
 
             # ------------------------------------------------------------------
-            # 3) Compute rhs_eff and detect infeasibility (node-level)
+            # 2) Compute rhs_eff and detect infeasibility (fixed edges + cuts)
             # ------------------------------------------------------------------
             self._rhs_eff = {}
-            if cuts_present_here:
+            if self.use_cover_cuts and self.best_cuts:
                 for idx_c, (cut, rhs) in enumerate(self.best_cuts):
                     rhs_eff = int(rhs) - len(cut & F_in)
                     self._rhs_eff[idx_c] = rhs_eff
                     if rhs_eff < 0:
-                        # node infeasible due to fixed edges saturating the cut
+                        # fixed edges already violate this cut -> node infeasible
                         end_time = time()
                         LagrangianMST.total_compute_time += end_time - start_time
                         return float('inf'), self.best_upper_bound, node_new_cuts
 
             # ------------------------------------------------------------------
-            # 4) Trim number of cuts at node start (keep important ones)
+            # 3) Trim number of cuts (keep at most max_active_cuts)
             # ------------------------------------------------------------------
-            max_active_cuts = getattr(self, "max_active_cuts", 5)
-            if cuts_present_here and len(self.best_cuts) > max_active_cuts:
+            if self.use_cover_cuts and self.best_cuts and len(self.best_cuts) > max_active_cuts:
                 parent_mu_map = getattr(self, "best_cut_multipliers_for_best_bound", None)
                 if not parent_mu_map:
                     parent_mu_map = self.best_cut_multipliers
 
                 idx_and_cut = list(enumerate(self.best_cuts))
-                # priority: large |μ|
                 idx_and_cut.sort(
                     key=lambda ic: abs(parent_mu_map.get(ic[0], 0.0)),
-                    reverse=True,
+                    reverse=True
                 )
                 idx_and_cut = idx_and_cut[:max_active_cuts]
 
                 new_cuts_list = []
-                new_mu = {}
-                new_mu_best = {}
-                new_rhs_eff = {}
+                new_mu       = {}
+                new_mu_best  = {}
+                new_rhs_eff  = {}
+
                 for new_i, (old_i, cut_rhs) in enumerate(idx_and_cut):
                     new_cuts_list.append(cut_rhs)
-                    new_mu[new_i] = parent_mu_map.get(old_i, 0.0)
+                    new_mu[new_i]      = parent_mu_map.get(old_i, 0.0)
                     new_mu_best[new_i] = parent_mu_map.get(old_i, 0.0)
                     new_rhs_eff[new_i] = self._rhs_eff[old_i]
 
-                self.best_cuts = new_cuts_list
-                self.best_cut_multipliers = new_mu
+                self.best_cuts                       = new_cuts_list
+                self.best_cut_multipliers            = new_mu
                 self.best_cut_multipliers_for_best_bound = new_mu_best
-                self._rhs_eff = new_rhs_eff
+                self._rhs_eff                        = new_rhs_eff
 
-            # Re-evaluate presence after trimming
             cuts_present_here = self.use_cover_cuts and bool(self.best_cuts)
 
             # ------------------------------------------------------------------
-            # 5) Precompute cut -> edge index arrays (FIXED for this node, but
-            #    we will rebuild them if we add cuts in-loop)
+            # 4) Build cut -> edge index arrays (for pricing/subgradients)
             # ------------------------------------------------------------------
-            cut_edge_idx_free = []
-            cut_free_sizes = []
-            cut_edge_idx_all = []
-            rhs_eff_vec = np.zeros(0, dtype=float)
-            rhs_vec = np.zeros(0, dtype=float)
-
             def _rebuild_cut_structures():
-                """
-                Rebuild index arrays and rhs vectors from self.best_cuts & self._rhs_eff.
-
-                OPT:
-                - If cover cuts are off, we just keep everything empty and return.
-                - If cuts are present but not dynamic (frozen deep node), we skip building
-                  the 'free' arrays that are only used by dynamic separation.
-                """
-                nonlocal cut_edge_idx_free, cut_free_sizes, cut_edge_idx_all, rhs_eff_vec, rhs_vec
+                nonlocal cut_edge_idx_free, cut_edge_idx_all, rhs_vec
 
                 cut_edge_idx_free = []
-                cut_free_sizes = []
-                cut_edge_idx_all = []
-
-                if not (self.use_cover_cuts and self.best_cuts):
-                    self._cut_edge_idx = []
-                    self._cut_edge_idx_all = []
-                    rhs_eff_vec = np.zeros(0, dtype=float)
-                    rhs_vec = np.zeros(0, dtype=float)
-                    return
-
-                build_free = cuts_dynamic_here
+                cut_edge_idx_all  = []
 
                 for cut, rhs in self.best_cuts:
-                    # FREE indices (for dynamic refinements) – only if needed
-                    if build_free:
-                        idxs_free = [
-                            edge_idx[e] for e in cut
-                            if (e not in F_in and e not in F_out) and (e in edge_idx)
-                        ]
-                        arr_free = (np.fromiter(idxs_free, dtype=np.int32)
-                                    if idxs_free else np.empty(0, dtype=np.int32))
-                        cut_edge_idx_free.append(arr_free)
-                        cut_free_sizes.append(max(1, len(idxs_free)))  # avoid /0
-                    else:
-                        cut_edge_idx_free.append(np.empty(0, dtype=np.int32))
-                        cut_free_sizes.append(1)
+                    # Free indices (not fixed in/out)
+                    idxs_free = [
+                        edge_idx[e] for e in cut
+                        if (e not in F_in and e not in F_out) and (e in edge_idx)
+                    ]
+                    arr_free = (
+                        np.fromiter(idxs_free, dtype=np.int32)
+                        if idxs_free else np.empty(0, dtype=np.int32)
+                    )
+                    cut_edge_idx_free.append(arr_free)
 
-                    # ALL indices (for dual pricing & true μ-subgradient)
+                    # All indices (for μ-subgradient)
                     idxs_all = [edge_idx[e] for e in cut if e in edge_idx]
-                    arr_all = (np.fromiter(idxs_all, dtype=np.int32)
-                               if idxs_all else np.empty(0, dtype=np.int32))
+                    arr_all  = (
+                        np.fromiter(idxs_all, dtype=np.int32)
+                        if idxs_all else np.empty(0, dtype=np.int32)
+                    )
                     cut_edge_idx_all.append(arr_all)
 
-                # stash for compute_modified_weights (used for pricing)
-                self._cut_edge_idx = cut_edge_idx_free
-                self._cut_edge_idx_all = cut_edge_idx_all
+                # store for compute_modified_weights
+                self._cut_edge_idx      = cut_edge_idx_free
+                self._cut_edge_idx_all  = cut_edge_idx_all
 
                 if self.best_cuts:
-                    rhs_eff_vec = np.array(
-                        [self._rhs_eff[i] for i in range(len(self.best_cuts))],
-                        dtype=float
-                    )
                     rhs_vec = np.array(
                         [rhs for (_, rhs) in self.best_cuts],
                         dtype=float
                     )
                 else:
-                    rhs_eff_vec = np.zeros(0, dtype=float)
                     rhs_vec = np.zeros(0, dtype=float)
 
-            if self.use_cover_cuts and (cuts_present_here or cuts_dynamic_here):
-                _rebuild_cut_structures()
-            else:
-                self._cut_edge_idx = []
-                self._cut_edge_idx_all = []
-                rhs_eff_vec = np.zeros(0, dtype=float)
-                rhs_vec = np.zeros(0, dtype=float)
 
-            # track how "useful" each cut was at this node (only positive violation)
-            max_cut_violation = [0.0 for _ in self.best_cuts] if (cuts_present_here or cuts_dynamic_here) else []
+            cut_edge_idx_free = []
+            cut_edge_idx_all  = []
+            rhs_vec           = np.zeros(0, dtype=float)
+            if self.use_cover_cuts:
+                _rebuild_cut_structures()
+
+            # Track usefulness of cuts at this node
+            max_cut_violation = [0.0 for _ in self.best_cuts]
 
             # Histories / caches
             self._mw_cached = None
             self._mw_lambda = None
-            self._mw_mu = np.zeros(len(cut_edge_idx_free), dtype=float)
+            self._mw_mu     = np.zeros(len(cut_edge_idx_free), dtype=float)
 
             if not hasattr(self, "subgradients"):
                 self.subgradients = []
@@ -1436,129 +1674,104 @@ class LagrangianMST:
             if not hasattr(self, "multipliers"):
                 self.multipliers = []
 
-            # Seed priced weights so iteration 0 is consistent
-            prev_weights = None
+            prev_weights   = None
             prev_mst_edges = None
+            last_g_lambda  = None
 
-            last_g_lambda = None  # for stagnation check
+            if not hasattr(self, "_mst_mask") or self._mst_mask.size != len(self.edge_weights):
+                self._mst_mask = np.zeros(len(self.edge_weights), dtype=bool)
+            mst_mask = self._mst_mask
+
+            # Decide iteration limit for this node:
+            if is_root and cutting_active_here:
+                iter_limit = root_max_iter
+            else:
+                iter_limit = max_iter
 
             # ------------------------------------------------------------------
-            # 6) Subgradient iterations (dual structure mostly fixed, but we may
-            #    add a few extra cuts in-loop with full rebuild).
+            # 5) Subgradient iterations
             # ------------------------------------------------------------------
-            base_max_iter = int(max_iter)
-            extra_iter_for_cuts = getattr(self, "extra_iter_for_cuts", base_max_iter)
-            hard_cap_iter = base_max_iter + extra_iter_for_cuts
+            for iter_num in range(int(iter_limit)):
 
-            dynamic_max_iter = base_max_iter
-            iter_num = 0
-
-            # Flags for violation-based cut generation
-            violation_seen_for_cuts = False   # did we ever see len(T) > B in this node?
-            did_separate_here = False         # did we already call generate_cover_cuts at this node?
-
-            while iter_num < dynamic_max_iter:
-                # 1) Solve MST on current priced weights
-                if pre_mst_available:
-                    mst_cost = pre_mst_cost
-                    mst_length = pre_mst_length
-                    mst_edges = pre_mst_edges
-                    pre_mst_available = False
-                else:
-                    if prev_weights is None:
-                        prev_weights = self.compute_modified_weights()
-                    try:
-                        mst_cost, mst_length, mst_edges = self.compute_mst_incremental(prev_weights, prev_mst_edges)
-                    except Exception:
-                        mst_cost, mst_length, mst_edges = self.compute_mst()
+                # 1) MST with current λ, μ
+                try:
+                    mst_cost, mst_length, mst_edges = self.compute_mst_incremental(prev_weights, prev_mst_edges)
+                except Exception:
+                    mst_cost, mst_length, mst_edges = self.compute_mst()
 
                 self.last_mst_edges = mst_edges
-                prev_mst_edges = self.last_mst_edges
+                prev_mst_edges      = mst_edges
 
-                # --------------------------------------------------------------
-                # Detect violating MST and trigger ONE-TIME cut generation
-                # --------------------------------------------------------------
-                if mst_length > self.budget + 1e-12:
-                    violation_seen_for_cuts = True
+                # delayed separation at root (unchanged) ...
+                if (
+                    is_root
+                    and cutting_active_here
+                    and root_pending_sep
+                    and len(self.best_cuts) < max_active_cuts
+                    and mst_length > self.budget
+                ):
+                    try:
+                        cand_cuts_loop = self.generate_cover_cuts(mst_edges) or []
 
-                    if (
-                        self.use_cover_cuts
-                        and cuts_dynamic_here
-                        and not did_separate_here
-                        and depth <= max_cut_depth
-                    ):
-                        try:
-                            cand_cuts = self.generate_cover_cuts(mst_edges) or []
+                        T_loop = set(mst_edges)
+                        scored_loop = []
+                        for cut, rhs in cand_cuts_loop:
+                            S   = set(cut)
+                            lhs = len(T_loop & S)
+                            violation = lhs - rhs
+                            if violation >= min_cut_violation_for_add:
+                                scored_loop.append((violation, S, rhs))
 
-                            T_loop = set(mst_edges)
-                            scored = []
-                            min_cut_violation_for_add = getattr(self, "min_cut_violation_for_add", 1.0)
-                            max_active_cuts = getattr(self, "max_active_cuts", 5)
-                            max_new_cuts_per_node = getattr(self, "max_new_cuts_per_node", 5)
+                        scored_loop.sort(reverse=True, key=lambda t: t[0])
 
-                            for cut, rhs in cand_cuts:
-                                S = set(cut)
-                                lhs = len(T_loop & S)
-                                violation = lhs - rhs
-                                if violation >= min_cut_violation_for_add:
-                                    scored.append((violation, S, rhs))
+                        remaining_slots = max(0, max_active_cuts - len(self.best_cuts))
+                        if remaining_slots > 0:
+                            scored_loop = scored_loop[:min(max_new_cuts_per_node, remaining_slots)]
+                        else:
+                            scored_loop = []
 
-                            scored.sort(reverse=True, key=lambda t: t[0])
+                        existing = {frozenset(c): rhs for (c, rhs) in self.best_cuts}
+                        added_any = False
 
-                            available_slots = max(0, max_active_cuts - len(self.best_cuts))
-                            if available_slots > 0:
-                                scored = scored[:min(max_new_cuts_per_node, available_slots)]
-                            else:
-                                scored = []
+                        for violation, S, rhs in scored_loop:
+                            fz = frozenset(S)
+                            if fz in existing:
+                                continue
+                            self.best_cuts.append((set(S), rhs))
+                            new_idx = len(self.best_cuts) - 1
+                            self.best_cut_multipliers[new_idx] = 0.00001
+                            self.best_cut_multipliers_for_best_bound[new_idx] = 0.00001
+                            self._rhs_eff[new_idx] = int(rhs) - len(set(S) & F_in)
+                            max_cut_violation.append(0.0)
+                            node_new_cuts.append((set(S), rhs))
+                            added_any = True
 
-                            existing = {frozenset(c): rhs for (c, rhs) in self.best_cuts}
+                        if added_any:
+                            _rebuild_cut_structures()
+                            self._mw_cached = None
+                            self._mw_mu     = np.zeros(len(cut_edge_idx_free), dtype=float)
 
-                            added_any = False
-                            for violation, S, rhs in scored:
-                                fz = frozenset(S)
-                                if fz in existing:
-                                    old_rhs = existing[fz]
-                                    if rhs > old_rhs:
-                                        idx = next(i for i, (c, r) in enumerate(self.best_cuts) if frozenset(c) == fz)
-                                        self.best_cuts[idx] = (set(S), rhs)
-                                        existing[fz] = rhs
-                                    continue
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"Error in root delayed separation at depth {depth}, iter {iter_num}: {e}")
+                    finally:
+                        root_pending_sep = False
 
-                                self.best_cuts.append((set(S), rhs))
-                                idx_new = len(self.best_cuts) - 1
-                                self.best_cut_multipliers[idx_new] = 0.0
-                                self.best_cut_multipliers_for_best_bound[idx_new] = 0.0
-                                self._rhs_eff[idx_new] = int(rhs) - len(set(S) & F_in)
-                                max_cut_violation.append(0.0)
-                                node_new_cuts.append((set(S), rhs))
-                                added_any = True
+                # Prepare weights for next iteration (cache)
+                prev_weights = getattr(self, "_last_mw", prev_weights)
 
-                            if added_any:
-                                _rebuild_cut_structures()
-                                cuts_present_here = self.use_cover_cuts and bool(self.best_cuts)
-                                self._mw_cached = None
-                                self._mw_mu = np.zeros(len(cut_edge_idx_free), dtype=float)
-
-                        except Exception as e:
-                            if self.verbose:
-                                print(f"Error generating cuts from violating MST at depth {depth}, iter {iter_num}: {e}")
-
-                        did_separate_here = True
-
-                # Prepare weights for next iteration (using current λ, μ and possibly updated cuts)
-                prev_weights = self.compute_modified_weights()
-
-                # 2) Dual & primal bookkeeping
+                # 2) Primal & UB
                 is_feasible = (mst_length <= self.budget)
-
-                # (a) primal & UB
                 self._record_primal_solution(self.last_mst_edges, is_feasible)
+                
                 if is_feasible:
                     try:
                         real_weight, real_length = self.compute_real_weight_length()
-                        if (not math.isnan(real_weight)
-                                and not math.isinf(real_weight)
-                                and real_weight < self.best_upper_bound):
+                        if (
+                            not math.isnan(real_weight)
+                            and not math.isinf(real_weight)
+                            and real_weight < self.best_upper_bound
+                        ):
                             self.best_upper_bound = real_weight
                     except Exception as e:
                         if self.verbose:
@@ -1567,10 +1780,15 @@ class LagrangianMST:
                 if len(self.primal_solutions) > MAX_SOLUTIONS:
                     self.primal_solutions = self.primal_solutions[-MAX_SOLUTIONS:]
 
-                # (b) Lagrangian dual value (dualized cuts use ORIGINAL rhs)
+                # 3) Dual value: L(λ, μ) = MST_cost - λ B - Σ μ_i rhs_i
+                lam_for_dual = max(0.0, min(self.lmbda, 1e4))
+
                 if self.use_cover_cuts and len(rhs_vec) > 0:
                     mu_vec = np.fromiter(
-                        (self.best_cut_multipliers.get(i, 0.0) for i in range(len(rhs_vec))),
+                        (
+                            max(0.0, min(self.best_cut_multipliers.get(i, 0.0), 1e4))
+                            for i in range(len(rhs_vec))
+                        ),
                         dtype=float,
                         count=len(rhs_vec),
                     )
@@ -1579,18 +1797,21 @@ class LagrangianMST:
                     mu_vec = np.zeros(len(rhs_vec), dtype=float)
                     cover_cut_penalty = 0.0
 
-                lagrangian_bound = mst_cost - self.lmbda * self.budget - cover_cut_penalty
-
-                if (not math.isnan(lagrangian_bound)
-                        and not math.isinf(lagrangian_bound)
-                        and abs(lagrangian_bound) < 1e10):
-                    if lagrangian_bound > self.best_lower_bound + 1e-6:
+                lagrangian_bound = mst_cost - lam_for_dual * self.budget - cover_cut_penalty
+                
+                # -------- LB update + no-improvement counter ----------
+                if (
+                    not math.isnan(lagrangian_bound)
+                    and not math.isinf(lagrangian_bound)
+                    and abs(lagrangian_bound) < 1e10
+                ):
+                    if lagrangian_bound > self.best_lower_bound + 1e-3:
                         self.best_lower_bound = lagrangian_bound
-                        self.best_lambda = self.lmbda
-                        self.best_mst_edges = self.last_mst_edges
-                        self.best_cost = mst_cost
+                        self.best_lambda      = lam_for_dual
+                        self.best_mst_edges   = self.last_mst_edges
+                        self.best_cost        = mst_cost
                         self.best_cut_multipliers_for_best_bound = self.best_cut_multipliers.copy()
-                        no_improvement_count = 0
+                        no_improvement_count  = 0
                     else:
                         no_improvement_count += 1
                         if no_improvement_count % CLEANUP_INTERVAL == 0:
@@ -1598,13 +1819,23 @@ class LagrangianMST:
                 else:
                     no_improvement_count += 1
 
-                # 3) Subgradients
+                # NEW: early stopping based purely on "no LB improvement"
+                if (
+                    no_improvement_count >= max_no_improvement
+                    and iter_num >= min_iters_before_early_stop
+                ):
+                    if 1==1:
+                        print(
+                            f"Terminating early at depth {depth}, iter {iter_num}: "
+                            f"no LB improvement for {no_improvement_count} iterations"
+                        )
+                    break
+                # ------------------------------------------------------
+
+                # 4) Subgradients
                 knapsack_subgradient = float(mst_length - self.budget)
 
-                if cuts_present_here and cuts_dynamic_here and len(cut_edge_idx_all) > 0:
-                    if not hasattr(self, "_mst_mask") or self._mst_mask.size != len(self.edge_weights):
-                        self._mst_mask = np.zeros(len(self.edge_weights), dtype=bool)
-                    mst_mask = self._mst_mask
+                if cuts_present_here and mu_dynamic_here and len(cut_edge_idx_all) > 0:
                     mst_mask[:] = False
                     for e in mst_edges:
                         j = self.edge_indices.get(e)
@@ -1614,41 +1845,43 @@ class LagrangianMST:
                     violations = []
                     for i, idxs_all in enumerate(cut_edge_idx_all):
                         lhs_i = int(mst_mask[idxs_all].sum()) if idxs_all.size else 0
-                        g_i = lhs_i - rhs_vec[i]
+                        g_i   = lhs_i - rhs_vec[i]
                         violations.append(g_i)
                         if g_i > max_cut_violation[i]:
                             max_cut_violation[i] = g_i
-                    violations = np.array(violations, dtype=float)
+                    violations       = np.array(violations, dtype=float)
                     cut_subgradients = violations.tolist()
                 else:
-                    violations = np.zeros(0, dtype=float)
                     cut_subgradients = []
 
-                # 4) Step sizes & updates (joint Polyak for λ and μ)
                 self.subgradients.append(knapsack_subgradient)
-
                 norm_sq = knapsack_subgradient ** 2
                 for g in cut_subgradients:
                     norm_sq += g ** 2
 
+                # Polyak step size
                 if polyak_enabled and self.best_upper_bound < float('inf') and norm_sq > 0.0:
-                    gap = max(0.0, self.best_upper_bound - lagrangian_bound)
+                    gap   = max(0.0, self.best_upper_bound - lagrangian_bound)
                     theta = gamma_base
                     alpha = theta * gap / (norm_sq + eps)
                 else:
-                    alpha = getattr(self, "step_size", 1e-5)
+                    alpha = getattr(self, "step_size", 1e-3)
 
-                # λ update with momentum
+                # λ update with momentum, then clamp it
                 v_prev = getattr(self, "_v_lambda", 0.0)
-                v_new = self.momentum_beta * v_prev + (1.0 - self.momentum_beta) * knapsack_subgradient
+                v_new  = self.momentum_beta * v_prev + (1.0 - self.momentum_beta) * knapsack_subgradient
                 self._v_lambda = v_new
-                self.lmbda = max(0.0, self.lmbda + alpha * v_new)
+                self.lmbda     = self.lmbda + alpha * v_new
+                
+                if self.lmbda < 0.0:
+                    self.lmbda = 0.0
+                if self.lmbda > 1e4:
+                    self.lmbda = 1e4
 
-                # μ updates (only if cuts are dynamic here)
-                if cuts_dynamic_here and len(cut_subgradients) > 0:
+                # μ updates only at μ-dynamic nodes, then clamp them
+                if mu_dynamic_here and len(cut_subgradients) > 0:
                     for i, g in enumerate(cut_subgradients):
                         delta = gamma_mu * alpha * g
-
                         if mu_increment_cap is not None:
                             if delta > mu_increment_cap:
                                 delta = mu_increment_cap
@@ -1657,50 +1890,31 @@ class LagrangianMST:
 
                         mu_old = self.best_cut_multipliers.get(i, 0.0)
                         mu_new = mu_old + delta
-
                         if mu_new < 0.0:
                             mu_new = 0.0
-
+                        if mu_new > 1e4:
+                            mu_new = 1e4
                         self.best_cut_multipliers[i] = mu_new
 
                 self.step_sizes.append(alpha)
                 self.multipliers.append((self.lmbda, self.best_cut_multipliers.copy()))
 
-                # λ stagnation check
-                if last_g_lambda is not None and abs(knapsack_subgradient - last_g_lambda) < 1e-6:
-                    self.consecutive_same_subgradient = getattr(self, 'consecutive_same_subgradient', 0) + 1
-                    if self.consecutive_same_subgradient > 10:
-                        if self.verbose:
-                            print("Terminating early: subgradient stagnation")
-                        break
-                    current_step = getattr(self, "step_size", 1e-5)
-                    self.step_size = max(1e-8, current_step * 0.7)
-                else:
-                    self.consecutive_same_subgradient = 0
-                last_g_lambda = knapsack_subgradient
 
                 if self.verbose and iter_num % 10 == 0:
-                    print(f"Subgrad Iter {iter_num}: λ={self.lmbda:.6f}, "
-                          f"len={mst_length:.2f}, gλ={knapsack_subgradient:.2f}, "
-                          f"cuts={len(self.best_cuts)}")
-
-                iter_num += 1
-
-                # Optional extension of iterations ONLY for shallow cut nodes
-                if (
-                    self.use_cover_cuts
-                    and cuts_dynamic_here
-                    and depth <= max_cut_depth
-                    and not violation_seen_for_cuts
-                    and iter_num == base_max_iter
-                ):
-                    dynamic_max_iter = min(hard_cap_iter, base_max_iter + extra_iter_for_cuts)
+                    print(
+                        f"Subgrad Iter {iter_num}: λ={self.lmbda:.6f}, "
+                        f"len={mst_length:.2f}, gλ={knapsack_subgradient:.2f}, "
+                        f"cuts={len(self.best_cuts)}, "
+                        f"no_improv={no_improvement_count}"
+                    )
+            
 
             # ------------------------------------------------------------------
-            # 7) Optional: drop "dead" cuts for future nodes
+            # 6) Drop "dead" cuts globally (never violated & μ tiny historically)
             # ------------------------------------------------------------------
             if self.use_cover_cuts and self.best_cuts:
                 keep_indices = []
+
                 parent_mu_map = getattr(
                     self,
                     "best_cut_multipliers_for_best_bound",
@@ -1708,720 +1922,47 @@ class LagrangianMST:
                 )
 
                 for i, (cut, rhs) in enumerate(self.best_cuts):
-                    mu_i = float(self.best_cut_multipliers.get(i, 0.0))
+                    mu_i    = float(self.best_cut_multipliers.get(i, 0.0))
                     mu_hist = float(parent_mu_map.get(i, 0.0))
 
-                    ever_useful = (max_cut_violation[i] > 0.0) or (abs(mu_hist) >= dead_mu_threshold)
+                    ever_useful = (i < len(max_cut_violation) and max_cut_violation[i] > 0.0) \
+                                or (abs(mu_hist) >= dead_mu_threshold)
 
-                    if (not ever_useful) and abs(mu_i) < dead_mu_threshold:
+                    if (not ever_useful) and abs(mu_i) < dead_mu_threshold and abs(mu_hist) < dead_mu_threshold:
                         continue
-
                     keep_indices.append(i)
 
                 if len(keep_indices) < len(self.best_cuts):
                     new_best_cuts = []
-                    new_mu = {}
-                    new_mu_best = {}
-                    new_rhs_eff = {}
+                    new_mu        = {}
+                    new_mu_best   = {}
+                    new_rhs_eff   = {}
+
                     for new_idx, old_idx in enumerate(keep_indices):
                         new_best_cuts.append(self.best_cuts[old_idx])
-                        new_mu[new_idx] = float(self.best_cut_multipliers.get(old_idx, 0.0))
+                        new_mu[new_idx]      = float(self.best_cut_multipliers.get(old_idx, 0.0))
                         new_mu_best[new_idx] = float(
                             self.best_cut_multipliers_for_best_bound.get(old_idx, 0.0)
                         )
                         new_rhs_eff[new_idx] = self._rhs_eff[old_idx]
 
-                    self.best_cuts = new_best_cuts
-                    self.best_cut_multipliers = new_mu
+                    self.best_cuts                       = new_best_cuts
+                    self.best_cut_multipliers            = new_mu
                     self.best_cut_multipliers_for_best_bound = new_mu_best
-                    self._rhs_eff = new_rhs_eff
+                    self._rhs_eff                        = new_rhs_eff
+
+            # ------------------------------------------------------------------
+            # 7) Restore best (λ, μ) to pass to children
+            # ------------------------------------------------------------------
+            if hasattr(self, "best_lambda"):
+                self.lmbda = self.best_lambda
+
+            if mu_dynamic_here and hasattr(self, "best_cut_multipliers_for_best_bound"):
+                self.best_cut_multipliers = self.best_cut_multipliers_for_best_bound.copy()
 
             end_time = time()
             LagrangianMST.total_compute_time += end_time - start_time
             return self.best_lower_bound, self.best_upper_bound, node_new_cuts
-
-
-
-        # else:  # Subgradient method with serious-step Polyak + depth-based cuts
-        #     import numpy as np
-        #     import math
-
-        #     # --- Tunables / safety limits -----------------------------------
-        #     MAX_SOLUTIONS = getattr(self, "max_solutions_hist", 50)
-        #     CLEANUP_INTERVAL = getattr(self, "cleanup_interval", 100)
-        #     max_iter_base = min(self.max_iter, getattr(self, "max_subgrad_iter", 200))
-
-        #     # Polyak / momentum hyperparams (for λ)
-        #     self.momentum_beta = getattr(self, "momentum_beta", 0.9)
-        #     gamma_base = getattr(self, "gamma_base", 0.10)      # base Polyak scaling
-
-        #     # μ updates: conservative
-        #     gamma_mu = getattr(self, "gamma_mu", 0.30)
-        #     mu_increment_cap = getattr(self, "mu_increment_cap", 1.0)
-        #     dead_mu_threshold = getattr(self, "dead_mu_threshold", 1e-6)
-        #     eps = 1e-12
-
-        #     # serious-step control
-        #     serious_improve_tol = getattr(self, "serious_improve_tol", 1e-3)
-        #     serious_patience = getattr(self, "serious_patience", 8)
-        #     alpha_max = getattr(self, "alpha_max", 1.0)         # cap on Polyak step
-        #     grad_tol = getattr(self, "grad_tol", 1e-5)          # joint grad norm tol
-
-        #     # ------------------------------------------------------------------
-        #     # Depth-based cutting policy
-        #     # ------------------------------------------------------------------
-        #     max_cut_depth = getattr(self, "max_cut_depth", 1)
-
-        #     # Ensure cut data structures exist
-        #     if not hasattr(self, "best_cuts"):
-        #         self.best_cuts = []
-        #     if not hasattr(self, "best_cut_multipliers"):
-        #         self.best_cut_multipliers = {}
-        #     if not hasattr(self, "best_cut_multipliers_for_best_bound"):
-        #         self.best_cut_multipliers_for_best_bound = {}
-
-        #     existing_cuts = self.best_cuts
-        #     cutting_active_here = self.use_cover_cuts and (depth <= max_cut_depth)
-        #     cuts_present_here = self.use_cover_cuts and bool(existing_cuts)
-
-        #     # FAST-PATH: no cuts globally, or no cuts here (deep node with no inherited cuts)
-        #     no_cuts_here = (not self.use_cover_cuts) or (not cutting_active_here and not cuts_present_here)
-
-        #     # ------------------------------------------------------------------
-        #     # Graph sanity guard
-        #     # ------------------------------------------------------------------
-        #     if not self.edge_list or self.num_nodes <= 1:
-        #         if self.verbose:
-        #             print(f"Error at depth {depth}: Empty edge list or invalid graph")
-        #         end_time = time()
-        #         LagrangianMST.total_compute_time += end_time - start_time
-        #         return self.best_lower_bound, self.best_upper_bound, []
-
-        #     # Prepare fixed/excluded sets & edge index
-        #     F_in = getattr(self, "fixed_edges", set())    # normalized tuples
-        #     F_out = getattr(self, "forbidden_edges", set()) if hasattr(self, "forbidden_edges") else set()
-        #     edge_idx = self.edge_indices
-
-        #     # ------------------------------------------------------------------
-        #     # 0) PURE λ-ONLY SUBGRADIENT FAST PATH (no cuts relevant)
-        #     # ------------------------------------------------------------------
-        #     if no_cuts_here:
-        #         no_improvement_count = 0
-        #         polyak_enabled = True
-
-        #         if not hasattr(self, "subgradients"):
-        #             self.subgradients = []
-        #         if not hasattr(self, "step_sizes"):
-        #             self.step_sizes = []
-        #         if not hasattr(self, "multipliers"):
-        #             self.multipliers = []
-
-        #         prev_weights = None
-        #         prev_mst_edges = None
-        #         last_g_lambda = None
-        #         iter_num = 0
-
-        #         # serious-step tracking for λ-only case (uses global best_upper_bound)
-        #         best_serious_bound = -float("inf")
-        #         non_serious_iters = 0
-        #         theta = gamma_base
-
-        #         while iter_num < max_iter_base:
-        #             # 1) Solve MST on current priced weights
-        #             if prev_weights is None:
-        #                 prev_weights = self.compute_modified_weights()
-        #             try:
-        #                 mst_cost, mst_length, mst_edges = self.compute_mst_incremental(prev_weights, prev_mst_edges)
-        #             except Exception:
-        #                 mst_cost, mst_length, mst_edges = self.compute_mst()
-
-        #             self.last_mst_edges = mst_edges
-        #             prev_mst_edges = mst_edges
-
-        #             # Prepare weights for next iteration
-        #             prev_weights = self.compute_modified_weights()
-
-        #             # 2) Primal & UB
-        #             is_feasible = (mst_length <= self.budget)
-        #             self._record_primal_solution(self.last_mst_edges, is_feasible)
-
-        #             if is_feasible:
-        #                 try:
-        #                     real_weight, real_length = self.compute_real_weight_length()
-        #                     if (not math.isnan(real_weight)
-        #                             and not math.isinf(real_weight)
-        #                             and real_weight < self.best_upper_bound):
-        #                         self.best_upper_bound = real_weight
-        #                 except Exception as e:
-        #                     if self.verbose:
-        #                         print(f"Error updating primal solution: {e}")
-
-        #             if len(self.primal_solutions) > MAX_SOLUTIONS:
-        #                 self.primal_solutions = self.primal_solutions[-MAX_SOLUTIONS:]
-
-        #             # 3) Dual value (no cover cuts)
-        #             lagrangian_bound = mst_cost - self.lmbda * self.budget
-
-        #             if (not math.isnan(lagrangian_bound)
-        #                     and not math.isinf(lagrangian_bound)
-        #                     and abs(lagrangian_bound) < 1e10):
-        #                 if lagrangian_bound > self.best_lower_bound + 1e-6:
-        #                     self.best_lower_bound = lagrangian_bound
-        #                     self.best_lambda = self.lmbda
-        #                     self.best_mst_edges = self.last_mst_edges
-        #                     self.best_cost = mst_cost
-        #                     no_improvement_count = 0
-        #                 else:
-        #                     no_improvement_count += 1
-        #                     if no_improvement_count % CLEANUP_INTERVAL == 0:
-        #                         self.primal_solutions = self.primal_solutions[-MAX_SOLUTIONS:]
-        #             else:
-        #                 no_improvement_count += 1
-
-        #             # 4) Subgradient & λ-update (serious-step Polyak + momentum)
-        #             knapsack_subgradient = float(mst_length - self.budget)
-        #             self.subgradients.append(knapsack_subgradient)
-
-        #             norm_sq = knapsack_subgradient ** 2
-
-        #             if polyak_enabled and self.best_upper_bound < float('inf') and norm_sq > 0.0:
-        #                 gap = max(0.0, self.best_upper_bound - lagrangian_bound)
-        #                 alpha = theta * gap / (norm_sq + eps)
-        #                 if alpha_max is not None:
-        #                     alpha = min(alpha, alpha_max)
-        #             else:
-        #                 alpha = getattr(self, "step_size", 1e-5)
-
-        #             # momentum update
-        #             v_prev = getattr(self, "_v_lambda", 0.0)
-        #             v_new = self.momentum_beta * v_prev + (1.0 - self.momentum_beta) * knapsack_subgradient
-        #             self._v_lambda = v_new
-        #             self.lmbda = max(0.0, self.lmbda + alpha * v_new)
-
-        #             self.step_sizes.append(alpha)
-        #             self.multipliers.append((self.lmbda, {}))
-
-        #             # serious-step logic on dual bound
-        #             if lagrangian_bound > best_serious_bound + serious_improve_tol:
-        #                 best_serious_bound = lagrangian_bound
-        #                 non_serious_iters = 0
-        #             else:
-        #                 non_serious_iters += 1
-        #                 if non_serious_iters >= serious_patience:
-        #                     theta *= 0.5
-        #                     non_serious_iters = 0
-
-        #             # λ stagnation check
-        #             if last_g_lambda is not None and abs(knapsack_subgradient - last_g_lambda) < 1e-6:
-        #                 self.consecutive_same_subgradient = getattr(self, 'consecutive_same_subgradient', 0) + 1
-        #                 if self.consecutive_same_subgradient > 10:
-        #                     if self.verbose:
-        #                         print("Terminating early (no-cuts mode): subgradient stagnation")
-        #                     break
-        #                 current_step = getattr(self, "step_size", 1e-5)
-        #                 self.step_size = max(1e-8, current_step * 0.7)
-        #             else:
-        #                 self.consecutive_same_subgradient = 0
-        #             last_g_lambda = knapsack_subgradient
-
-        #             # stopping by gradient norm
-        #             if norm_sq < grad_tol ** 2:
-        #                 if self.verbose:
-        #                     print("Terminating early (no-cuts mode): small gradient norm")
-        #                 break
-
-        #             if self.verbose and iter_num % 10 == 0:
-        #                 print(f"[No-cuts] Subgrad Iter {iter_num}: λ={self.lmbda:.6f}, "
-        #                       f"len={mst_length:.2f}, gλ={knapsack_subgradient:.2f}")
-
-        #             iter_num += 1
-
-        #         end_time = time()
-        #         LagrangianMST.total_compute_time += end_time - start_time
-        #         return self.best_lower_bound, self.best_upper_bound, []
-
-        #     # ------------------------------------------------------------------
-        #     # 1) CUT-AWARE PATH (dynamic or frozen cuts)
-        #     # ------------------------------------------------------------------
-        #     cuts_dynamic_here = self.use_cover_cuts and cutting_active_here
-        #     cuts_present_here = self.use_cover_cuts and bool(self.best_cuts)
-
-        #     no_improvement_count = 0
-        #     polyak_enabled = True
-        #     node_new_cuts = []
-
-        #     # --------------------------------------------------------------
-        #     # Pre-separation warm-start (only for dynamic cut nodes)
-        #     # --------------------------------------------------------------
-        #     pre_mst_available = False
-        #     pre_mst_cost = None
-        #     pre_mst_length = None
-        #     pre_mst_edges = None
-
-        #     if cuts_dynamic_here:
-        #         try:
-        #             w0 = self.compute_modified_weights()
-        #             try:
-        #                 mst_cost0, mst_len0, mst_edges0 = self.compute_mst_incremental(w0, None)
-        #             except Exception:
-        #                 mst_cost0, mst_len0, mst_edges0 = self.compute_mst()
-
-        #             pre_mst_available = True
-        #             pre_mst_cost = mst_cost0
-        #             pre_mst_length = mst_len0
-        #             pre_mst_edges = mst_edges0
-
-        #         except Exception as e:
-        #             if self.verbose:
-        #                 print(f"Error in pre-separation at depth {depth}: {e}")
-
-        #     # ------------------------------------------------------------------
-        #     # 2) Compute rhs_eff and detect infeasibility (fixed edges)
-        #     # ------------------------------------------------------------------
-        #     self._rhs_eff = {}
-        #     if cuts_present_here:
-        #         for idx_c, (cut, rhs) in enumerate(self.best_cuts):
-        #             rhs_eff = int(rhs) - len(cut & F_in)
-        #             self._rhs_eff[idx_c] = rhs_eff
-        #             if rhs_eff < 0:
-        #                 end_time = time()
-        #                 LagrangianMST.total_compute_time += end_time - start_time
-        #                 return float('inf'), self.best_upper_bound, node_new_cuts
-
-        #     # ------------------------------------------------------------------
-        #     # 3) Trim number of cuts at node start (keep important ones)
-        #     # ------------------------------------------------------------------
-        #     max_active_cuts = getattr(self, "max_active_cuts", 5)
-        #     if cuts_present_here and len(self.best_cuts) > max_active_cuts:
-        #         parent_mu_map = getattr(self, "best_cut_multipliers_for_best_bound", None)
-        #         if not parent_mu_map:
-        #             parent_mu_map = self.best_cut_multipliers
-
-        #         idx_and_cut = list(enumerate(self.best_cuts))
-        #         idx_and_cut.sort(
-        #             key=lambda ic: abs(parent_mu_map.get(ic[0], 0.0)),
-        #             reverse=True,
-        #         )
-        #         idx_and_cut = idx_and_cut[:max_active_cuts]
-
-        #         new_cuts_list = []
-        #         new_mu = {}
-        #         new_mu_best = {}
-        #         new_rhs_eff = {}
-        #         for new_i, (old_i, cut_rhs) in enumerate(idx_and_cut):
-        #             new_cuts_list.append(cut_rhs)
-        #             new_mu[new_i] = parent_mu_map.get(old_i, 0.0)
-        #             new_mu_best[new_i] = parent_mu_map.get(old_i, 0.0)
-        #             new_rhs_eff[new_i] = self._rhs_eff[old_i]
-
-        #         self.best_cuts = new_cuts_list
-        #         self.best_cut_multipliers = new_mu
-        #         self.best_cut_multipliers_for_best_bound = new_mu_best
-        #         self._rhs_eff = new_rhs_eff
-
-        #     cuts_present_here = self.use_cover_cuts and bool(self.best_cuts)
-
-        #     # ------------------------------------------------------------------
-        #     # 4) Precompute cut -> edge index arrays (rebuilt when adding cuts)
-        #     # ------------------------------------------------------------------
-        #     cut_edge_idx_free = []
-        #     cut_free_sizes = []
-        #     cut_edge_idx_all = []
-        #     rhs_eff_vec = np.zeros(0, dtype=float)
-        #     rhs_vec = np.zeros(0, dtype=float)
-
-        #     def _rebuild_cut_structures():
-        #         nonlocal cut_edge_idx_free, cut_free_sizes, cut_edge_idx_all, rhs_eff_vec, rhs_vec
-
-        #         cut_edge_idx_free = []
-        #         cut_free_sizes = []
-        #         cut_edge_idx_all = []
-
-        #         if not (self.use_cover_cuts and self.best_cuts):
-        #             self._cut_edge_idx = []
-        #             self._cut_edge_idx_all = []
-        #             rhs_eff_vec = np.zeros(0, dtype=float)
-        #             rhs_vec = np.zeros(0, dtype=float)
-        #             return
-
-        #         build_free = cuts_dynamic_here
-
-        #         for cut, rhs in self.best_cuts:
-        #             if build_free:
-        #                 idxs_free = [
-        #                     edge_idx[e] for e in cut
-        #                     if (e not in F_in and e not in F_out) and (e in edge_idx)
-        #                 ]
-        #                 arr_free = (np.fromiter(idxs_free, dtype=np.int32)
-        #                             if idxs_free else np.empty(0, dtype=np.int32))
-        #                 cut_edge_idx_free.append(arr_free)
-        #                 cut_free_sizes.append(max(1, len(idxs_free)))
-        #             else:
-        #                 cut_edge_idx_free.append(np.empty(0, dtype=np.int32))
-        #                 cut_free_sizes.append(1)
-
-        #             idxs_all = [edge_idx[e] for e in cut if e in edge_idx]
-        #             arr_all = (np.fromiter(idxs_all, dtype=np.int32)
-        #                        if idxs_all else np.empty(0, dtype=np.int32))
-        #             cut_edge_idx_all.append(arr_all)
-
-        #         self._cut_edge_idx = cut_edge_idx_free
-        #         self._cut_edge_idx_all = cut_edge_idx_all
-
-        #         if self.best_cuts:
-        #             rhs_eff_vec = np.array(
-        #                 [self._rhs_eff[i] for i in range(len(self.best_cuts))],
-        #                 dtype=float
-        #             )
-        #             rhs_vec = np.array(
-        #                 [rhs for (_, rhs) in self.best_cuts],
-        #                 dtype=float
-        #             )
-        #         else:
-        #             rhs_eff_vec = np.zeros(0, dtype=float)
-        #             rhs_vec = np.zeros(0, dtype=float)
-
-        #     if self.use_cover_cuts and (cuts_present_here or cuts_dynamic_here):
-        #         _rebuild_cut_structures()
-        #     else:
-        #         self._cut_edge_idx = []
-        #         self._cut_edge_idx_all = []
-        #         rhs_eff_vec = np.zeros(0, dtype=float)
-        #         rhs_vec = np.zeros(0, dtype=float)
-
-        #     max_cut_violation = [0.0 for _ in self.best_cuts] if (cuts_present_here or cuts_dynamic_here) else []
-
-        #     # Histories / caches
-        #     self._mw_cached = None
-        #     self._mw_lambda = None
-        #     self._mw_mu = np.zeros(len(cut_edge_idx_free), dtype=float)
-
-        #     if not hasattr(self, "subgradients"):
-        #         self.subgradients = []
-        #     if not hasattr(self, "step_sizes"):
-        #         self.step_sizes = []
-        #     if not hasattr(self, "multipliers"):
-        #         self.multipliers = []
-
-        #     prev_weights = None
-        #     prev_mst_edges = None
-        #     last_g_lambda = None
-
-        #     # serious-step tracking (joint λ, μ)
-        #     best_serious_bound = -float("inf")
-        #     non_serious_iters = 0
-        #     theta_joint = gamma_base
-
-        #     # dynamic iteration control
-        #     base_max_iter = int(max_iter_base)
-        #     extra_iter_for_cuts = getattr(self, "extra_iter_for_cuts", base_max_iter)
-        #     hard_cap_iter = base_max_iter + extra_iter_for_cuts
-
-        #     dynamic_max_iter = base_max_iter
-        #     iter_num = 0
-
-        #     violation_seen_for_cuts = False
-        #     did_separate_here = False
-
-        #     while iter_num < dynamic_max_iter:
-        #         # 1) Solve MST on current priced weights
-        #         if pre_mst_available:
-        #             mst_cost = pre_mst_cost
-        #             mst_length = pre_mst_length
-        #             mst_edges = pre_mst_edges
-        #             pre_mst_available = False
-        #         else:
-        #             if prev_weights is None:
-        #                 prev_weights = self.compute_modified_weights()
-        #             try:
-        #                 mst_cost, mst_length, mst_edges = self.compute_mst_incremental(prev_weights, prev_mst_edges)
-        #             except Exception:
-        #                 mst_cost, mst_length, mst_edges = self.compute_mst()
-
-        #         self.last_mst_edges = mst_edges
-        #         prev_mst_edges = self.last_mst_edges
-
-        #         # ----------------------------------------------------------
-        #         # Cut separation: one-shot, only on clear knapsack violation
-        #         # ----------------------------------------------------------
-        #         if mst_length > self.budget + 1e-12:
-        #             violation_seen_for_cuts = True
-
-        #             if (
-        #                 self.use_cover_cuts
-        #                 and cuts_dynamic_here
-        #                 and not did_separate_here
-        #                 and depth <= max_cut_depth
-        #             ):
-        #                 try:
-        #                     cand_cuts = self.generate_cover_cuts(mst_edges) or []
-
-        #                     T_loop = set(mst_edges)
-        #                     scored = []
-        #                     min_cut_violation_for_add = getattr(self, "min_cut_violation_for_add", 1.0)
-        #                     max_active_cuts = getattr(self, "max_active_cuts", 5)
-        #                     max_new_cuts_per_node = getattr(self, "max_new_cuts_per_node", 5)
-
-        #                     for cut, rhs in cand_cuts:
-        #                         S = set(cut)
-        #                         lhs = len(T_loop & S)
-        #                         violation = lhs - rhs
-        #                         if violation >= min_cut_violation_for_add:
-        #                             scored.append((violation, S, rhs))
-
-        #                     scored.sort(reverse=True, key=lambda t: t[0])
-
-        #                     available_slots = max(0, max_active_cuts - len(self.best_cuts))
-        #                     if available_slots > 0:
-        #                         scored = scored[:min(max_new_cuts_per_node, available_slots)]
-        #                     else:
-        #                         scored = []
-
-        #                     existing = {frozenset(c): rhs for (c, rhs) in self.best_cuts}
-
-        #                     added_any = False
-        #                     for violation, S, rhs in scored:
-        #                         fz = frozenset(S)
-        #                         if fz in existing:
-        #                             old_rhs = existing[fz]
-        #                             if rhs > old_rhs:
-        #                                 idx = next(i for i, (c, r) in enumerate(self.best_cuts) if frozenset(c) == fz)
-        #                                 self.best_cuts[idx] = (set(S), rhs)
-        #                                 existing[fz] = rhs
-        #                             continue
-
-        #                         self.best_cuts.append((set(S), rhs))
-        #                         idx_new = len(self.best_cuts) - 1
-        #                         self.best_cut_multipliers[idx_new] = 0.0
-        #                         self.best_cut_multipliers_for_best_bound[idx_new] = 0.0
-        #                         self._rhs_eff[idx_new] = int(rhs) - len(set(S) & F_in)
-        #                         max_cut_violation.append(0.0)
-        #                         node_new_cuts.append((set(S), rhs))
-        #                         added_any = True
-
-        #                     if added_any:
-        #                         _rebuild_cut_structures()
-        #                         cuts_present_here = self.use_cover_cuts and bool(self.best_cuts)
-        #                         self._mw_cached = None
-        #                         self._mw_mu = np.zeros(len(cut_edge_idx_free), dtype=float)
-
-        #                 except Exception as e:
-        #                     if self.verbose:
-        #                         print(f"Error generating cuts at depth {depth}, iter {iter_num}: {e}")
-
-        #                 did_separate_here = True
-
-        #         prev_weights = self.compute_modified_weights()
-
-        #         # 2) Dual & primal bookkeeping
-        #         is_feasible = (mst_length <= self.budget)
-
-        #         self._record_primal_solution(self.last_mst_edges, is_feasible)
-        #         if is_feasible:
-        #             try:
-        #                 real_weight, real_length = self.compute_real_weight_length()
-        #                 if (not math.isnan(real_weight)
-        #                         and not math.isinf(real_weight)
-        #                         and real_weight < self.best_upper_bound):
-        #                     self.best_upper_bound = real_weight
-        #             except Exception as e:
-        #                 if self.verbose:
-        #                     print(f"Error updating primal solution: {e}")
-
-        #         if len(self.primal_solutions) > MAX_SOLUTIONS:
-        #             self.primal_solutions = self.primal_solutions[-MAX_SOLUTIONS:]
-
-        #         if self.use_cover_cuts and len(rhs_vec) > 0:
-        #             mu_vec = np.fromiter(
-        #                 (self.best_cut_multipliers.get(i, 0.0) for i in range(len(rhs_vec))),
-        #                 dtype=float,
-        #                 count=len(rhs_vec),
-        #             )
-        #             cover_cut_penalty = float(mu_vec @ rhs_vec)
-        #         else:
-        #             mu_vec = np.zeros(len(rhs_vec), dtype=float)
-        #             cover_cut_penalty = 0.0
-
-        #         lagrangian_bound = mst_cost - self.lmbda * self.budget - cover_cut_penalty
-
-        #         if (not math.isnan(lagrangian_bound)
-        #                 and not math.isinf(lagrangian_bound)
-        #                 and abs(lagrangian_bound) < 1e10):
-        #             if lagrangian_bound > self.best_lower_bound + 1e-6:
-        #                 self.best_lower_bound = lagrangian_bound
-        #                 self.best_lambda = self.lmbda
-        #                 self.best_mst_edges = self.last_mst_edges
-        #                 self.best_cost = mst_cost
-        #                 self.best_cut_multipliers_for_best_bound = self.best_cut_multipliers.copy()
-        #                 no_improvement_count = 0
-        #             else:
-        #                 no_improvement_count += 1
-        #                 if no_improvement_count % CLEANUP_INTERVAL == 0:
-        #                     self.primal_solutions = self.primal_solutions[-MAX_SOLUTIONS:]
-        #         else:
-        #             no_improvement_count += 1
-
-        #         # 3) Subgradients
-        #         knapsack_subgradient = float(mst_length - self.budget)
-
-        #         if cuts_present_here and cuts_dynamic_here and len(cut_edge_idx_all) > 0:
-        #             if not hasattr(self, "_mst_mask") or self._mst_mask.size != len(self.edge_weights):
-        #                 self._mst_mask = np.zeros(len(self.edge_weights), dtype=bool)
-        #             mst_mask = self._mst_mask
-        #             mst_mask[:] = False
-        #             for e in mst_edges:
-        #                 j = self.edge_indices.get(e)
-        #                 if j is not None:
-        #                     mst_mask[j] = True
-
-        #             violations = []
-        #             for i, idxs_all in enumerate(cut_edge_idx_all):
-        #                 lhs_i = int(mst_mask[idxs_all].sum()) if idxs_all.size else 0
-        #                 g_i = lhs_i - rhs_vec[i]
-        #                 violations.append(g_i)
-        #                 if g_i > max_cut_violation[i]:
-        #                     max_cut_violation[i] = g_i
-        #             violations = np.array(violations, dtype=float)
-        #             cut_subgradients = violations.tolist()
-        #         else:
-        #             violations = np.zeros(0, dtype=float)
-        #             cut_subgradients = []
-
-        #         # 4) Joint Polyak step for (λ, μ)
-        #         self.subgradients.append(knapsack_subgradient)
-
-        #         norm_sq = knapsack_subgradient ** 2
-        #         for g in cut_subgradients:
-        #             norm_sq += g ** 2
-
-        #         if polyak_enabled and self.best_upper_bound < float('inf') and norm_sq > 0.0:
-        #             gap = max(0.0, self.best_upper_bound - lagrangian_bound)
-        #             alpha = theta_joint * gap / (norm_sq + eps)
-        #             if alpha_max is not None:
-        #                 alpha = min(alpha, alpha_max)
-        #         else:
-        #             alpha = getattr(self, "step_size", 1e-5)
-
-        #         # λ update with momentum
-        #         v_prev = getattr(self, "_v_lambda", 0.0)
-        #         v_new = self.momentum_beta * v_prev + (1.0 - self.momentum_beta) * knapsack_subgradient
-        #         self._v_lambda = v_new
-        #         self.lmbda = max(0.0, self.lmbda + alpha * v_new)
-
-        #         # μ updates (only dynamic cut nodes)
-        #         if cuts_dynamic_here and len(cut_subgradients) > 0:
-        #             for i, g in enumerate(cut_subgradients):
-        #                 delta = gamma_mu * alpha * g
-
-        #                 if mu_increment_cap is not None:
-        #                     if delta > mu_increment_cap:
-        #                         delta = mu_increment_cap
-        #                     elif delta < -mu_increment_cap:
-        #                         delta = -mu_increment_cap
-
-        #                 mu_old = self.best_cut_multipliers.get(i, 0.0)
-        #                 mu_new = mu_old + delta
-        #                 if mu_new < 0.0:
-        #                     mu_new = 0.0
-        #                 self.best_cut_multipliers[i] = mu_new
-
-        #         self.step_sizes.append(alpha)
-        #         self.multipliers.append((self.lmbda, self.best_cut_multipliers.copy()))
-
-        #         # serious-step logic on dual bound
-        #         if lagrangian_bound > best_serious_bound + serious_improve_tol:
-        #             best_serious_bound = lagrangian_bound
-        #             non_serious_iters = 0
-        #         else:
-        #             non_serious_iters += 1
-        #             if non_serious_iters >= serious_patience:
-        #                 theta_joint *= 0.5
-        #                 non_serious_iters = 0
-
-        #         # λ stagnation check
-        #         if last_g_lambda is not None and abs(knapsack_subgradient - last_g_lambda) < 1e-6:
-        #             self.consecutive_same_subgradient = getattr(self, 'consecutive_same_subgradient', 0) + 1
-        #             if self.consecutive_same_subgradient > 10:
-        #                 if self.verbose:
-        #                     print("Terminating early: subgradient stagnation")
-        #                 break
-        #             current_step = getattr(self, "step_size", 1e-5)
-        #             self.step_size = max(1e-8, current_step * 0.7)
-        #         else:
-        #             self.consecutive_same_subgradient = 0
-        #         last_g_lambda = knapsack_subgradient
-
-        #         # stopping: gradient norm and dual gap
-        #         if norm_sq < grad_tol ** 2:
-        #             if self.verbose:
-        #                 print("Terminating early: small joint gradient norm")
-        #             break
-        #         if (self.best_upper_bound < float("inf")
-        #                 and self.best_upper_bound - self.best_lower_bound <= getattr(self, "dual_gap_tol", 1e-4)):
-        #             if self.verbose:
-        #                 print("Terminating early: small dual gap")
-        #             break
-
-        #         if self.verbose and iter_num % 10 == 0:
-        #             print(f"Subgrad Iter {iter_num}: λ={self.lmbda:.6f}, "
-        #                   f"len={mst_length:.2f}, gλ={knapsack_subgradient:.2f}, "
-        #                   f"cuts={len(self.best_cuts)}")
-
-        #         iter_num += 1
-
-        #         # Optional extension of iterations ONLY for shallow cut nodes
-        #         if (
-        #             self.use_cover_cuts
-        #             and cuts_dynamic_here
-        #             and depth <= max_cut_depth
-        #             and not violation_seen_for_cuts
-        #             and iter_num == base_max_iter
-        #         ):
-        #             dynamic_max_iter = min(hard_cap_iter, base_max_iter + extra_iter_for_cuts)
-
-        #     # ------------------------------------------------------------------
-        #     # 5) Drop "dead" cuts for future nodes (never violated & tiny μ)
-        #     # ------------------------------------------------------------------
-        #     if self.use_cover_cuts and self.best_cuts:
-        #         keep_indices = []
-        #         parent_mu_map = getattr(
-        #             self,
-        #             "best_cut_multipliers_for_best_bound",
-        #             self.best_cut_multipliers,
-        #         )
-
-        #         for i, (cut, rhs) in enumerate(self.best_cuts):
-        #             mu_i = float(self.best_cut_multipliers.get(i, 0.0))
-        #             mu_hist = float(parent_mu_map.get(i, 0.0))
-
-        #             ever_useful = (max_cut_violation[i] > 0.0) or (abs(mu_hist) >= dead_mu_threshold)
-        #             if (not ever_useful) and abs(mu_i) < dead_mu_threshold:
-        #                 continue
-        #             keep_indices.append(i)
-
-        #         if len(keep_indices) < len(self.best_cuts):
-        #             new_best_cuts = []
-        #             new_mu = {}
-        #             new_mu_best = {}
-        #             new_rhs_eff = {}
-        #             for new_idx, old_idx in enumerate(keep_indices):
-        #                 new_best_cuts.append(self.best_cuts[old_idx])
-        #                 new_mu[new_idx] = float(self.best_cut_multipliers.get(old_idx, 0.0))
-        #                 new_mu_best[new_idx] = float(
-        #                     self.best_cut_multipliers_for_best_bound.get(old_idx, 0.0)
-        #                 )
-        #                 new_rhs_eff[new_idx] = self._rhs_eff[old_idx]
-
-        #             self.best_cuts = new_best_cuts
-        #             self.best_cut_multipliers = new_mu
-        #             self.best_cut_multipliers_for_best_bound = new_mu_best
-        #             self._rhs_eff = new_rhs_eff
-
-        #     end_time = time()
-        #     LagrangianMST.total_compute_time += end_time - start_time
-        #     return self.best_lower_bound, self.best_upper_bound, node_new_cuts
-
-
 
 
     def compute_mst_for_lambda(self, lambda_val):
@@ -2597,8 +2138,10 @@ class LagrangianMST:
         edge_weights = defaultdict(float)
         for i, (mst_edges, _) in enumerate(self.primal_solutions):
             lambda_i = self.step_sizes[i]
+
             weight = lambda_i / total_step_sum
             for e in mst_edges:
+                # print("dd", e)
                 edge_weights[e] += weight
 
         # Ensure weights are in [0, 1] (should be automatic but added for robustness)

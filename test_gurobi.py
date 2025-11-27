@@ -272,7 +272,7 @@ def parse_arguments():
     parser.add_argument(
         "--density",
         type=float,
-        default=0.3,
+        default=1,
         help="The density of the graph (default: 0.3)"
     )
     parser.add_argument(
@@ -337,7 +337,7 @@ def solve_with_gurobi(instance, seed, verbose=False):
     model = gp.Model("MST_Knapsack_SingleCommodityFlow")
     model.setParam("OutputFlag", 1 if verbose else 0)  # Verbose logging
     model.setParam("TimeLimit", 2700)  # 1 hour limit
-    model.setParam("MIPGap", 0.001)  # Small gap for convergence
+    model.setParam("MIPGap", 0.003)  # Small gap for convergence
 
     # Variables
     x = model.addVars(E, vtype=GRB.BINARY, name="x")  # Edge selection

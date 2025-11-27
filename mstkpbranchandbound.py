@@ -47,7 +47,7 @@ class MSTNode(Node):
 
     def __init__(self, edges, num_nodes, budget, fixed_edges=set(), excluded_edges=set(), branched_edges=set(),
                  initial_lambda=0.05, inherit_lambda=False, branching_rule="random_mst",
-                 step_size=0.00001, inherit_step_size=False, use_cover_cuts=False, cut_frequency=5,
+                 step_size=0.001, inherit_step_size=False, use_cover_cuts=False, cut_frequency=5,
                  node_cut_frequency=10, parent_cover_cuts=None, parent_cover_multipliers=None,
                  use_bisection=False, max_iter=10, verbose=False, depth=0,
                  pseudocosts_up=None, pseudocosts_down=None, counts_up=None, counts_down=None,
@@ -123,8 +123,8 @@ class MSTNode(Node):
                 new_idx = len(self.active_cuts)
                 self.active_cuts.append((normalized_cut, rhs))
                 self.cut_multipliers[new_idx] = (
-                    parent_cover_multipliers.get(cut_idx, 0.001)
-                    if parent_cover_multipliers else 0.001
+                    parent_cover_multipliers.get(cut_idx, 0.00001)
+                    if parent_cover_multipliers else 0.00001
                 )
 
         self.local_lower_bound, self.best_upper_bound, self.new_cuts = self.lagrangian_solver.solve(
@@ -132,6 +132,14 @@ class MSTNode(Node):
             inherited_multipliers=self.cut_multipliers,
             depth=self.depth
         )
+        # --- SYNC cuts and multipliers with solver's final state ---
+        # self.active_cuts = [
+        #     (set(cut), rhs) for (cut, rhs) in self.lagrangian_solver.best_cuts
+        # ]
+        # self.cut_multipliers = self.lagrangian_solver.best_cut_multipliers_for_best_bound.copy()
+        # self.new_cuts = []  # best_cuts already includes surviving cuts
+        # -----------------------------------------------------------
+
 
         # self.mst_edges = [tuple(sorted((u, v))) for u, v in self.lagrangian_solver.last_mst_edges]
         raw_edges = self.lagrangian_solver.last_mst_edges
@@ -181,7 +189,8 @@ class MSTNode(Node):
         estimated_length = fixed_length + edges_needed * min_edge_length
         return estimated_length <= self.budget
 
-   
+    
+
 
     def create_children(self, branched_edge):
         """
@@ -201,7 +210,6 @@ class MSTNode(Node):
         to at most `max_child_cuts`, keeping the strongest ones.
         """
         import numpy as np  # (note: currently unused, safe to remove if you like)
-
         # how many cuts to keep per child (you can tune this)
         max_child_cuts = getattr(self, "max_child_cuts", 25)
 
@@ -262,18 +270,39 @@ class MSTNode(Node):
             cut_like, rhs_like = pair
             return (set(_iter_edges_any(cut_like)), int(rhs_like))
 
+        # all_cuts = []
+        # for p in (self.active_cuts or []):
+        #     all_cuts.append(_norm_pair(p))
+        # for p in (getattr(self, "new_cuts", []) or []):
+        #     all_cuts.append(_norm_pair(p))
+
+        # # Multipliers: parent snapshot + 0 for newly added cuts
+        # parent_mu = getattr(solver, "best_cut_multipliers_for_best_bound", {}) or {}
+        # current_multipliers = dict(parent_mu)
+        # first_new = len(self.active_cuts or [])
+        # for cut_idx in range(first_new, len(all_cuts)):
+        #     current_multipliers[cut_idx] = 0.00001
+        # 1) Build merged cuts
         all_cuts = []
         for p in (self.active_cuts or []):
             all_cuts.append(_norm_pair(p))
         for p in (getattr(self, "new_cuts", []) or []):
             all_cuts.append(_norm_pair(p))
 
-        # Multipliers: parent snapshot + 0 for newly added cuts
-        parent_mu = getattr(solver, "best_cut_multipliers_for_best_bound", {}) or {}
-        current_multipliers = dict(parent_mu)
-        first_new = len(self.active_cuts or [])
-        for cut_idx in range(first_new, len(all_cuts)):
-            current_multipliers[cut_idx] = 0.0
+        # 2) Build a map from support -> μ using solver.best_cuts
+        best_cuts = getattr(solver, "best_cuts", []) or []
+        best_mu   = getattr(solver, "best_cut_multipliers_for_best_bound", {}) or {}
+
+        support_to_mu = {}
+        for i, (cut_i, rhs_i) in enumerate(best_cuts):
+            key = (frozenset(cut_i), rhs_i)
+            support_to_mu[key] = float(best_mu.get(i, 0.0))
+
+        # 3) Assign multipliers to all_cuts by support, default small μ for unseen cuts
+        current_multipliers = {}
+        for idx, (cut, rhs) in enumerate(all_cuts):
+            key = (frozenset(cut), rhs)
+            current_multipliers[idx] = support_to_mu.get(key, 0.00001)
 
         # Quick prune for fixed child
         F_fixed = set(self.fixed_edges) | {normalized_edge}
@@ -339,7 +368,7 @@ class MSTNode(Node):
                     F_fixed, set(self.excluded_edges), new_branched_edges,
                     initial_lambda=solver.best_lambda if self.inherit_lambda else 0.05,
                     inherit_lambda=self.inherit_lambda, branching_rule=self.branching_rule,
-                    step_size=solver.step_size if self.inherit_step_size else 0.00001,
+                    step_size=solver.step_size if self.inherit_step_size else 0.001,
                     inherit_step_size=self.inherit_step_size, use_cover_cuts=self.use_cover_cuts,
                     cut_frequency=self.cut_frequency, node_cut_frequency=self.node_cut_frequency,
                     parent_cover_cuts=kept_cuts_fixed,
@@ -361,7 +390,7 @@ class MSTNode(Node):
             set(self.fixed_edges), F_excluded, new_branched_edges,
             initial_lambda=solver.best_lambda if self.inherit_lambda else 0.05,
             inherit_lambda=self.inherit_lambda, branching_rule=self.branching_rule,
-            step_size=solver.step_size if self.inherit_step_size else 0.00001,
+            step_size=solver.step_size if self.inherit_step_size else 0.001,
             inherit_step_size=self.inherit_step_size, use_cover_cuts=self.use_cover_cuts,
             cut_frequency=self.cut_frequency, node_cut_frequency=self.node_cut_frequency,
             parent_cover_cuts=kept_cuts_excl,
@@ -427,40 +456,37 @@ class MSTNode(Node):
             else:  # sb_fractional
                 shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
                 # shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
-                normalized_edge_weights = shor_primal_solution
-                tolerance = 1e-6
-                candidate_edges = [
-                    e for e in normalized_edge_weights
-                    if e not in self.fixed_edges and
-                    e not in self.excluded_edges 
-                    and
-                    e not in self.branched_edges and
-                    normalized_edge_weights[e] > tolerance and
-                    normalized_edge_weights[e] < 1.0 - tolerance
-                ]
-                if not candidate_edges:
+                normalized_edge_weights = None  # only used in sb_fractional
+
+                if shor_primal_solution is None:
+                    # No fractional info available -> fall back to MST edges
                     mst_edges = [tuple(sorted((u, v))) for u, v in self.lagrangian_solver.best_mst_edges]
                     candidate_edges = [
                         e for e in mst_edges
+                        if e not in self.fixed_edges
+                        and e not in self.excluded_edges
+                        and e not in self.branched_edges
+                    ]
+                else:
+                    normalized_edge_weights = shor_primal_solution
+                    tolerance = 1e-6
+                    candidate_edges = [
+                        e for e in normalized_edge_weights
+                        if e not in self.fixed_edges and
+                        e not in self.excluded_edges and
+                        e not in self.branched_edges and
+                        normalized_edge_weights[e] > tolerance and
+                        normalized_edge_weights[e] < 1.0 - tolerance
+                    ]
+                    if not candidate_edges:
+                        candidate_edges = [
+                        e for e in normalized_edge_weights
                         if e not in self.fixed_edges and
                         e not in self.excluded_edges and
                         e not in self.branched_edges
-                    ]
-                # else:
-                #     normalized_edge_weights = shor_primal_solution
-                #     tolerance = 1e-6
-                #     candidate_edges = [
-                #         e for e in normalized_edge_weights
-                #         if e not in self.fixed_edges and
-                #         e not in self.excluded_edges 
-                #         and
-                #         e not in self.branched_edges and
-                #         normalized_edge_weights[e] > tolerance and
-                #         normalized_edge_weights[e] < 1.0 - tolerance
-                #     ]
+                        ]
 
             if not candidate_edges:
-                print("bgj")
                 if self.verbose:
                     print(f"No {self.branching_rule} candidates available")
                 return None
@@ -468,6 +494,12 @@ class MSTNode(Node):
             if self.verbose:
                 print(f"Node {id(self)}: {self.branching_rule} evaluating {len(candidate_edges)} edges: {candidate_edges}")
 
+            MAX_SB_CANDIDATES = 10
+            if self.branching_rule == "sb_fractional" and normalized_edge_weights is not None:
+                candidate_edges.sort(
+                    key=lambda e: -abs(normalized_edge_weights[e] - 0.5)
+                )
+            candidate_edges = candidate_edges[:MAX_SB_CANDIDATES]
             # Collect edges that lead to pruning
             edges_to_fix = set()
             edges_to_exclude = set()
@@ -597,20 +629,25 @@ class MSTNode(Node):
                     return None
                 return [candidates[0]]
 
-            # normalized_edge_weights = shor_primal_solution
+            normalized_edge_weights = shor_primal_solution
             candidates = [
                 e for e in shor_primal_solution
                 if e not in self.fixed_edges and
                 e not in self.excluded_edges and
-                e not in self.branched_edges 
-                # and
-                # abs(normalized_edge_weights[e]) > 1e-6 and
-                # abs(normalized_edge_weights[e] - 1.0) > 1e-6
+                e not in self.branched_edges and
+                abs(normalized_edge_weights[e]) > 1e-6 and
+                abs(normalized_edge_weights[e] - 1.0) > 1e-6
             ]
+                            
+            if not candidates:
+                candidates = [
+                e for e in shor_primal_solution
+                if e not in self.fixed_edges and
+                e not in self.excluded_edges and
+                e not in self.branched_edges
+                ]
 
-            return candidates if candidates else None
-            # return [random.choice(candidates)] if candidates else None
-            
+            return candidates if candidates else None            
 
         
         elif self.branching_rule == "most_violated":
@@ -640,7 +677,7 @@ class MSTNode(Node):
             shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
             # shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
 
-            
+            candidate_edges = []
             if shor_primal_solution is not None:
                 tolerance = 1e-6
                 candidate_edges = [
@@ -648,11 +685,12 @@ class MSTNode(Node):
                     if e not in self.fixed_edges
                     and e not in self.excluded_edges
                     and e not in self.branched_edges
-                    and shor_primal_solution[e] > tolerance
-                    and shor_primal_solution[e] < 1.0 - tolerance
+                    and shor_primal_solution[e] > 0.0
+                    and shor_primal_solution[e] < 1.0
                 ]
                 candidate_edges.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
-            else:
+
+            if shor_primal_solution is None or not candidate_edges:
                 mst_edges = [tuple(sorted((u, v))) for u, v in self.lagrangian_solver.best_mst_edges]
                 candidate_edges = [
                     e for e in mst_edges
@@ -660,7 +698,7 @@ class MSTNode(Node):
                     and e not in self.excluded_edges
                     and e not in self.branched_edges
                 ]
-            
+
             if not candidate_edges:
                 return None
 
@@ -668,26 +706,29 @@ class MSTNode(Node):
             unhistoried = []
             reliable_candidates = []
             for e in candidate_edges:
-                if self.counts_up.get(e, 0) < self.reliability_eta or self.counts_down.get(e, 0) < self.reliability_eta:
+                cu = self.counts_up.get(e, 0)
+                cd = self.counts_down.get(e, 0)
+                if cu < self.reliability_eta or cd < self.reliability_eta:
                     unhistoried.append(e)
                 else:
                     reliable_candidates.append(e)
-            
+
             # Adaptive lookahead
-            duality_gap = (self.best_upper_bound - self.local_lower_bound 
-                        if self.best_upper_bound < float('inf') else float('inf'))
+            duality_gap = (
+                self.best_upper_bound - self.local_lower_bound
+                if self.best_upper_bound < float("inf") else float("inf")
+            )
             if self.depth < 5:
                 max_sb_evals = self.lookahead_lambda
-            elif self.depth < 10 and duality_gap > 0.1 * self.best_upper_bound:
-                max_sb_evals = max(2, self.lookahead_lambda - 1)
             else:
-                max_sb_evals = max(1, self.lookahead_lambda // 2)
-            
+                max_sb_evals = max(2, self.lookahead_lambda - 1)
+
+
             unhistoried = unhistoried[:max_sb_evals]
 
             edges_to_fix = set()
             edges_to_exclude = set()
-            best_score = float('-inf')
+            best_score = float("-inf")
             best_edge = None
             scores = []
 
@@ -699,13 +740,12 @@ class MSTNode(Node):
                     f = max(0.01, min(0.99, f))
                 else:
                     f = self.get_fractional_value(edge)
-                
-                count_up, count_down = self.counts_up.get(edge, 0), self.counts_down.get(edge, 0)
+
+                count_up = self.counts_up.get(edge, 0)
+                count_down = self.counts_down.get(edge, 0)
+
 
                 sb_score, fix_delta, exc_delta, fix_inf, exc_inf = self.calculate_strong_branching_score(edge)
-
-                if fix_inf and exc_inf:
-                    continue
 
                 # Adaptive learning rate
                 if count_up == 0 and count_down == 0:
@@ -715,7 +755,7 @@ class MSTNode(Node):
                 else:
                     alpha = 0.1
 
-                # Update pseudocosts
+                # Update pseudocosts (UP / fix = x_e → 1)
                 if not fix_inf and (1 - f) > 1e-6:
                     new_pc_up = max(0, fix_delta) / max(1e-9, (1 - f))
                     if count_up == 0:
@@ -728,6 +768,7 @@ class MSTNode(Node):
                             self.pseudocosts_up[edge] = new_pc_up
                     self.counts_up[edge] = count_up + 1
 
+                # Update pseudocosts (DOWN / exclude = x_e → 0)
                 if not exc_inf and f > 1e-6:
                     new_pc_down = max(0, exc_delta) / max(1e-9, f)
                     if count_down == 0:
@@ -740,12 +781,23 @@ class MSTNode(Node):
                             self.pseudocosts_down[edge] = new_pc_down
                     self.counts_down[edge] = count_down + 1
 
+                # DEBUG: state after strong branching update for this edge
+                # print(
+                #     f"[RLB] NodeDepth={self.depth} EDGE={edge} AFTER_SB "
+                #     f"pc_up={self.pseudocosts_up.get(edge, None)} "
+                #     f"pc_down={self.pseudocosts_down.get(edge, None)} "
+                #     f"counts=({self.counts_up.get(edge, 0)}, {self.counts_down.get(edge, 0)}) "
+                #     f"fix_inf={fix_inf} exc_inf={exc_inf} sb_score={sb_score:.4f}"
+                # )
+
+                # Process SB outcome
                 if not fix_inf and not exc_inf:
                     scores.append((sb_score, edge, fix_inf, exc_inf))
                     if sb_score > best_score:
                         best_score = sb_score
                         best_edge = edge
                 else:
+                    # If one side is infeasible, we can force the other decision
                     if fix_inf:
                         edges_to_exclude.add(edge)
                     if exc_inf:
@@ -758,22 +810,23 @@ class MSTNode(Node):
                     f = max(0.01, min(0.99, f))
                 else:
                     f = self.get_fractional_value(edge)
-                
+
                 pc_up = self.pseudocosts_up.get(edge, 1.0)
                 pc_down = self.pseudocosts_down.get(edge, 1.0)
-                
-                # Confidence-weighted scoring
+
                 count_up = self.counts_up.get(edge, 0)
                 count_down = self.counts_down.get(edge, 0)
+
+                # Confidence-weighted scoring
                 confidence_up = min(1.0, count_up / (2 * self.reliability_eta))
                 confidence_down = min(1.0, count_down / (2 * self.reliability_eta))
                 confidence = (confidence_up + confidence_down) / 2
-                
+
                 delta_up = pc_up * (1 - f)
                 delta_down = pc_down * f
                 geometric_mean = (delta_up * delta_down) ** 0.5
                 score = geometric_mean * (0.9 + 0.1 * confidence)
-                
+
                 scores.append((score, edge, False, False))
 
             if not scores and not (edges_to_fix or edges_to_exclude):
@@ -782,7 +835,7 @@ class MSTNode(Node):
             # Handle forced decisions
             if edges_to_fix or edges_to_exclude:
                 if self.verbose:
-                    print(f"Creating single child with fixed edges: {edges_to_fix}, excluded edges: {edges_to_exclude}")
+                    print(f"[RLB] FORCED CHILD: fix={edges_to_fix}, exclude={edges_to_exclude}")
                 child = self.create_single_child(edges_to_fix, edges_to_exclude)
                 return ([list(edges_to_fix)[0] if edges_to_fix else list(edges_to_exclude)[0]], child)
             else:
@@ -790,14 +843,12 @@ class MSTNode(Node):
                 best_score, best_edge, fix_inf, exc_inf = scores[0]
 
                 if self.verbose:
-                    print(f"Selected best edge {best_edge} with score {best_score}")
+                    print(f"[RLB] SELECTED best_edge={best_edge} score={best_score:.4f}")
 
-            return [best_edge] 
-        
+            return [best_edge]
 
 
-       
-       
+              
         elif self.branching_rule == "hybrid_strong_fractional":
 
             # --- Adaptive criteria for choosing strong vs fractional branching ---
@@ -812,14 +863,9 @@ class MSTNode(Node):
 
             use_strong_branching = (
                 self.depth < 5
-                or (self.depth < 10 and (len(self.fixed_edges) + len(self.excluded_edges)) < 0.1 * len(self.edges))
+                # or (self.depth < 10 and (len(self.fixed_edges) + len(self.excluded_edges)) < 0.1 * len(self.edges))
                 or (gap_ratio > 0.99)  # large gap remaining (keep your threshold)
             )
-
-            def _norm(e):
-                u, v = e
-                return (u, v) if u <= v else (v, u)
-
             if use_strong_branching:
                 # Strong branching phase with computational limits
                 shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
@@ -828,44 +874,35 @@ class MSTNode(Node):
 
                 if shor_primal_solution is not None:
                     # Normalize keys and drop non-finite weights
-                    normalized_edge_weights = {}
-                    for e, w in shor_primal_solution.items():
-                        if w is None or not math.isfinite(w):
-                            continue
-                        try:
-                            ne = _norm(e)
-                        except Exception:
-                            continue
-                        normalized_edge_weights[ne] = w
-
                     tolerance = 1e-6
                     candidate_edges = [
-                        e for e in normalized_edge_weights
+                        e for e in shor_primal_solution
                         if e not in self.fixed_edges
                         and e not in self.excluded_edges
                         and e not in self.branched_edges
-                        and normalized_edge_weights[e] > tolerance
-                        and normalized_edge_weights[e] < 1.0 - tolerance
+                        and shor_primal_solution[e] > tolerance
+                        and shor_primal_solution[e] < 1.0 - tolerance
                     ]
-                    # Prioritize most fractional edges for strong branching
-                    candidate_edges.sort(key=lambda e: abs(normalized_edge_weights[e] - 0.5))
-                else:
-                    # Fallback to MST edges
-                    mst_edges = [_norm((u, v)) for u, v in (self.lagrangian_solver.best_mst_edges or [])]
+
+                    candidate_edges.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
+                if shor_primal_solution is None or not candidate_edges:
+                    mst_edges = [tuple(sorted((u, v))) for u, v in self.lagrangian_solver.best_mst_edges]
                     candidate_edges = [
                         e for e in mst_edges
                         if e not in self.fixed_edges
                         and e not in self.excluded_edges
                         and e not in self.branched_edges
                     ]
-
+                
                 if not candidate_edges:
                     if self.verbose:
                         print("No hybrid strong candidates available")
                     return None
 
                 # Limit strong branching evaluations based on depth (kept as-is)
-                max_sb_evals = max(1, min(5, 8 - self.depth)) if self.depth < 8 else 1
+                # max_sb_evals = max(2, min(5, 8 - self.depth)) if self.depth < 8 else 1
+                max_sb_evals = max(2, 8 - self.depth)
+
                 candidate_edges = candidate_edges[:max_sb_evals]
 
                 if self.verbose:
@@ -918,27 +955,17 @@ class MSTNode(Node):
 
             if shor_primal_solution is None:
                 # Final fallback to MST edges
-                candidates = [
-                    _norm((u, v)) for u, v in (self.lagrangian_solver.best_mst_edges or [])
-                    if _norm((u, v)) not in self.fixed_edges
-                    and _norm((u, v)) not in self.excluded_edges
-                    and _norm((u, v)) not in self.branched_edges
+                mst_edges = [tuple(sorted((u, v))) for u, v in self.lagrangian_solver.best_mst_edges]
+                candidate_edges = [
+                    e for e in mst_edges
+                    if e not in self.fixed_edges
+                    and e not in self.excluded_edges
+                    and e not in self.branched_edges
                 ]
-                return [candidates[0]] if candidates else None
-
-            # Use fractional solution — normalize keys and drop non-finite weights
-            normalized_edge_weights = {}
-            for e, w in shor_primal_solution.items():
-                if w is None or not math.isfinite(w):
-                    continue
-                try:
-                    ne = _norm(e)
-                except Exception:
-                    continue
-                normalized_edge_weights[ne] = w
+                return [candidate_edges[0]] if candidate_edges else None
 
             candidates = [
-                e for e in normalized_edge_weights
+                e for e in shor_primal_solution
                 if e not in self.fixed_edges
                 and e not in self.excluded_edges
                 and e not in self.branched_edges
@@ -950,16 +977,10 @@ class MSTNode(Node):
             # Score by distance from 0.5 (most fractional first)
             branching_scores = []
             for e in candidates:
-                w = normalized_edge_weights.get(e, 0.0)
-                distance_score = -abs(w - 0.5)  # Negative so sorting descending gives smallest distance first
+                distance_score = -abs(shor_primal_solution.get(e, 0.5) - 0.5)  # Negative so sorting descending gives smallest distance first
                 branching_scores.append((e, distance_score))
 
             branching_scores.sort(key=lambda x: x[1], reverse=True)
-
-            if self.verbose:
-                selected_edge = branching_scores[0][0]
-                selected_weight = normalized_edge_weights[selected_edge]
-                print(f"Hybrid (fractional) selected edge {selected_edge} with weight {selected_weight:.3f}")
 
             return [branching_scores[0][0]]
 
@@ -968,60 +989,183 @@ class MSTNode(Node):
         else:
             raise ValueError(f"Unknown branching rule: {self.branching_rule}")
 
+   
     def create_single_child(self, edges_to_fix, edges_to_exclude):
-        """Create a single child node with multiple edges fixed or excluded."""
-        print("hhhhhhhhhhhhhh")
-        
-        new_branched_edges = self.branched_edges | edges_to_fix | edges_to_exclude
+        """
+        Fully consistent with create_children:
+        - Correct (S, rhs) projection: S_free, rhs'
+        - Redundant cut removal
+        - Infeasibility detection
+        - Support-based μ remapping
+        - max_child_cuts limiting
+        - Proper state propagation (depth, pseudocosts, reliability, etc.)
+        """
 
-        # Combine active cuts and new cuts from the parent
-        all_cuts = self.active_cuts + [(set(tuple(sorted((x, y))) for x, y in cut), rhs) for cut, rhs in self.new_cuts]
-        current_multipliers = self.lagrangian_solver.best_cut_multipliers_for_best_bound.copy()
-        for cut_idx in range(len(self.active_cuts), len(all_cuts)):
-            current_multipliers[cut_idx] = 0.001  # Default multiplier for new cuts
+        print("Creating single child with cuts projection")
+        solver = self.lagrangian_solver
+        edge_indices = solver.edge_indices
+        known_edges = set(edge_indices.keys())
 
-        # Filter cuts for excluded edges
-        excluded_cuts = []
-        for cut, rhs in all_cuts:
-            remaining_cover = cut - edges_to_exclude
-            if len(remaining_cover) <= rhs:
-                excluded_cuts.append((cut, rhs))
-        # kept_cuts = [c for c in all_cuts if c not in excluded_cuts]
-        # kept_indices = [i for i, c in enumerate(all_cuts) if c in kept_cuts]
-        # kept_multipliers = {i: current_multipliers[i] for i in kept_indices if i in current_multipliers}
-        kept_cuts = [c for c in all_cuts if c not in excluded_cuts]
-        kept_indices = [i for i, c in enumerate(all_cuts) if c in kept_cuts]
-        kept_multipliers = {}
-        for new_i, old_i in enumerate(kept_indices):
-            if old_i in current_multipliers:
-                kept_multipliers[new_i] = current_multipliers[old_i]
+        idx_to_edge = getattr(solver, "idx_to_edge", None)
+        if idx_to_edge is None:
+            idx_to_edge = {j: e for e, j in edge_indices.items()}
+            solver.idx_to_edge = idx_to_edge
 
+        max_child_cuts = getattr(self, "max_child_cuts", 25)
+
+        # --- Normalize edges ---
+        def _norm_edge(e):
+            if not (isinstance(e, tuple) and len(e) == 2):
+                return None
+            a, b = e
+            t = (a, b) if a <= b else (b, a)
+            return t if t in known_edges else None
+
+        # --- Normalize any cut representation into edge set ---
+        def _iter_edges_any(x):
+            if isinstance(x, tuple) and len(x) == 2:
+                e = _norm_edge(x)
+                if e: yield e
+                return
+            if isinstance(x, int):
+                e_raw = idx_to_edge.get(int(x))
+                e = _norm_edge(e_raw)
+                if e: yield e
+                return
+            try:
+                for item in x:
+                    if isinstance(item, int):
+                        e_raw = idx_to_edge.get(item)
+                        e = _norm_edge(e_raw)
+                    elif isinstance(item, tuple) and len(item) == 2:
+                        e = _norm_edge(item)
+                    elif isinstance(item, (list, set, frozenset)) and len(item) == 2:
+                        e = _norm_edge(tuple(item))
+                    else:
+                        e = None
+                    if e: yield e
+            except TypeError:
+                return
+
+        def _norm_pair(pair):
+            cut_like, rhs_like = pair
+            return (set(_iter_edges_any(cut_like)), int(rhs_like))
+
+        # ---- Merge active cuts + new cuts ----
+        all_cuts = []
+        for p in (self.active_cuts or []):
+            all_cuts.append(_norm_pair(p))
+        for p in (getattr(self, "new_cuts", []) or []):
+            all_cuts.append(_norm_pair(p))
+
+        # ---- μ mapping from solver.best_cuts ----
+        best_cuts = getattr(solver, "best_cuts", []) or []
+        best_mu   = getattr(solver, "best_cut_multipliers_for_best_bound", {}) or {}
+
+        support_to_mu = {}
+        for i, (cut_i, rhs_i) in enumerate(best_cuts):
+            support_to_mu[(frozenset(cut_i), rhs_i)] = float(best_mu.get(i, 0.0))
+
+        # each cut in all_cuts receives μ by support
+        current_multipliers = {}
+        for idx, (cut, rhs) in enumerate(all_cuts):
+            key = (frozenset(cut), rhs)
+            current_multipliers[idx] = support_to_mu.get(key, 0.00001)
+
+        # --- Final fixed / excluded sets ---
+        child_fixed = set(self.fixed_edges)
+        for e in edges_to_fix:
+            ne = _norm_edge(e)
+            if ne: child_fixed.add(ne)
+
+        child_excl = set(self.excluded_edges)
+        for e in edges_to_exclude:
+            ne = _norm_edge(e)
+            if ne: child_excl.add(ne)
+
+        new_branched_edges = self.branched_edges | child_fixed | child_excl
+
+        # --- Project cuts exactly like create_children ---
+        def _project_for_child(fixed_child, excluded_child):
+            infeasible = False
+            proj = {}
+
+            for old_i, (S, rhs) in enumerate(all_cuts):
+                S_known = {e for e in S if e in known_edges}
+                S_fixed = S_known & fixed_child
+                S_free  = S_known - fixed_child - excluded_child
+
+                rhs_prime = rhs - len(S_fixed)
+                if rhs_prime < 0:
+                    infeasible = True
+                    break
+                if len(S_free) <= rhs_prime:
+                    continue
+
+                key = frozenset(S_free)
+                mu_old = float(current_multipliers.get(old_i, 0.0))
+
+                prev = proj.get(key)
+                if (prev is None or
+                    rhs_prime < prev[0] or
+                    (rhs_prime == prev[0] and abs(mu_old) > abs(prev[1]))):
+                    proj[key] = (rhs_prime, mu_old)
+
+            if infeasible:
+                return None, None, True
+
+            # sort like create_children
+            def _key(sfree, rhs_, mu_):
+                return (-len(sfree), rhs_, tuple(sorted(sfree)))
+
+            ordered = sorted(
+                ((sfree, rhs_mu[0], rhs_mu[1]) for sfree, rhs_mu in proj.items()),
+                key=lambda x: _key(x[0], x[1], x[2])
+            )
+
+            if len(ordered) > max_child_cuts:
+                ordered = ordered[:max_child_cuts]
+
+            kept_cuts = [(set(sfree), rhs) for (sfree, rhs, mu) in ordered]
+            kept_mu   = {i: float(mu) for i, (_, _, mu) in enumerate(ordered)}
+
+            return kept_cuts, kept_mu, False
+
+        kept_cuts, kept_mu, prune = _project_for_child(child_fixed, child_excl)
+        if prune:
+            return None
+
+        # ---- Create the child (identical arguments as create_children) ----
         child = MSTNode(
-            self.edges,
-            self.num_nodes,
-            self.budget,
-            fixed_edges=self.fixed_edges | edges_to_fix,
-            excluded_edges=self.excluded_edges | edges_to_exclude,
+            self.edges, self.num_nodes, self.budget,
+            fixed_edges=child_fixed,
+            excluded_edges=child_excl,
             branched_edges=new_branched_edges,
-            initial_lambda=self.lagrangian_solver.best_lambda if self.inherit_lambda else 0.05,
+            initial_lambda=solver.best_lambda if self.inherit_lambda else 0.05,
             inherit_lambda=self.inherit_lambda,
             branching_rule=self.branching_rule,
-            step_size=self.lagrangian_solver.step_size if self.inherit_step_size else 0.00001,
+            step_size=solver.step_size if self.inherit_step_size else 0.001,
             inherit_step_size=self.inherit_step_size,
             use_cover_cuts=self.use_cover_cuts,
             cut_frequency=self.cut_frequency,
             node_cut_frequency=self.node_cut_frequency,
             parent_cover_cuts=kept_cuts,
-            parent_cover_multipliers=kept_multipliers,
+            parent_cover_multipliers=kept_mu,
             use_bisection=self.use_bisection,
-            max_iter=10,
-            verbose=self.verbose
+            max_iter=solver.max_iter,
+            verbose=self.verbose,
+            depth=self.depth + 1,
+            pseudocosts_up=self.pseudocosts_up,
+            pseudocosts_down=self.pseudocosts_down,
+            counts_up=self.counts_up,
+            counts_down=self.counts_down,
+            reliability_eta=self.reliability_eta,
+            lookahead_lambda=self.lookahead_lambda,
         )
 
-        if self.verbose:
-            print(f"Created single child: fixed_edges={child.fixed_edges}, excluded_edges={child.excluded_edges}, cuts={len(child.active_cuts)}")
-
         return child
+
+
 
    
 
@@ -1076,18 +1220,28 @@ class MSTNode(Node):
                 parent_index[(frozenset(cset), rhs)] = idx
             for idx, (cset, rhs) in enumerate(all_cuts):
                 pidx = parent_index.get((frozenset(cset), rhs))
-                cut_multipliers[idx] = self.cut_multipliers.get(pidx, 0.001) if pidx is not None else 0.001
+                cut_multipliers[idx] = self.cut_multipliers.get(pidx, 0.00001) if pidx is not None else 0.00001
         else:
             for idx in range(len(all_cuts)):
-                cut_multipliers[idx] = 0.001
+                cut_multipliers[idx] = 0.00001
 
         # --- Borrow, reset, (optionally) set warm-start state via attributes, then solve ---
         with self._sb_pool.borrow() as sim_solver:
+                # --- Sync cut-related parameters from the main solver to the SB solver ---
+            if hasattr(self.lagrangian_solver, "max_cut_depth"):
+                sim_solver.max_cut_depth = getattr(self.lagrangian_solver, "max_cut_depth")
+            if hasattr(self.lagrangian_solver, "extra_iter_for_cuts"):
+                sim_solver.extra_iter_for_cuts = getattr(self.lagrangian_solver, "extra_iter_for_cuts")
+            if hasattr(self.lagrangian_solver, "min_cut_violation_for_add"):
+                sim_solver.min_cut_violation_for_add = getattr(
+                    self.lagrangian_solver, "min_cut_violation_for_add"
+                )
+
             sim_solver.reset(
                 fixed_edges=new_fixed,
                 excluded_edges=new_excluded,
                 initial_lambda=getattr(self.lagrangian_solver, "best_lambda", getattr(self, "initial_lambda", 0.05)),
-                step_size=getattr(self.lagrangian_solver, "step_size", getattr(self, "step_size", 0.1)),
+                step_size=getattr(self.lagrangian_solver, "step_size", getattr(self, "step_size", 0.001)),
                 max_iter=int(max_iters),
                 use_cover_cuts=bool(getattr(self, "use_cover_cuts", False)),
                 cut_frequency=int(getattr(self, "cut_frequency", 10)),
@@ -1103,10 +1257,19 @@ class MSTNode(Node):
                 sim_solver.lmbda = float(self.lagrangian_solver.best_lambda)
 
             # Call solve WITHOUT unsupported kwargs
+            # lower_bound, upper_bound, _info = sim_solver.solve(
+            #     inherited_cuts=all_cuts,
+            #     inherited_multipliers=cut_multipliers
+            # )
+            # Depth for the probe: children of this node → depth + 1
+            probe_depth = getattr(self, "depth", 0) + 1
+
             lower_bound, upper_bound, _info = sim_solver.solve(
                 inherited_cuts=all_cuts,
-                inherited_multipliers=cut_multipliers
+                inherited_multipliers=cut_multipliers,
+                depth=probe_depth,          # <<< IMPORTANT
             )
+
 
         return float(lower_bound)
 
@@ -1114,44 +1277,65 @@ class MSTNode(Node):
     def calculate_strong_branching_score(self, edge):
         """
         Fast strong branching using simulation instead of full child creation.
-        
+
         Returns:
             (score, fix_delta, exc_delta, fix_infeasible, exclude_infeasible)
         """
         u, v = tuple(sorted(edge))
-            # === EARLY PRUNING: Check if fixing violates any cut ===
-    
-        # Simulate fixing edge
+
+        # --- Strong-branching probe: FIX edge ---
         fixed_lower_bound = self.simulate_branching_bound(edge, fix_edge=True, max_iters=5)
-        fix_infeasible = (fixed_lower_bound > self.best_upper_bound or 
-                        math.isnan(fixed_lower_bound) or 
-                        math.isinf(fixed_lower_bound))
-        
+        fix_infeasible = math.isnan(fixed_lower_bound) or math.isinf(fixed_lower_bound)
+
         if self.verbose and fix_infeasible:
-            print(f"Fixed simulation for edge {edge} is infeasible: {fixed_lower_bound}")
-        
-        # Simulate excluding edge
+            print(f"Fixed simulation for edge {edge} is infeasible (LB={fixed_lower_bound})")
+
+        # --- Strong-branching probe: EXCLUDE edge ---
         excluded_lower_bound = self.simulate_branching_bound(edge, fix_edge=False, max_iters=5)
-        exclude_infeasible = (excluded_lower_bound > self.best_upper_bound or 
-                            math.isnan(excluded_lower_bound) or 
-                            math.isinf(excluded_lower_bound))
-        
+        exclude_infeasible = math.isnan(excluded_lower_bound) or math.isinf(excluded_lower_bound)
+
         if self.verbose and exclude_infeasible:
-            print(f"Excluded simulation for edge {edge} is infeasible: {excluded_lower_bound}")
-        
-        # Compute score
-        fix_delta = (fixed_lower_bound - self.local_lower_bound) if not fix_infeasible else float('inf')
-        exc_delta = (excluded_lower_bound - self.local_lower_bound) if not exclude_infeasible else float('inf')
-        
-        # Product score (as in your original)
-        score = (max(fix_delta, 1e-6) * max(exc_delta, 1e-6) 
-                if fix_delta != float('inf') and exc_delta != float('inf') 
-                else float('inf'))
-        
+            print(f"Excluded simulation for edge {edge} is infeasible (LB={excluded_lower_bound})")
+
+        # If both directions are infeasible, this edge is useless as a branching candidate
+        if fix_infeasible and exclude_infeasible:
+            if self.verbose:
+                print(f"Edge {edge}: both branches infeasible in strong branching probe")
+            # Worst possible score, deltas 0 (won't affect pseudocosts either)
+            return -float("inf"), 0.0, 0.0, True, True
+
+        # --- Compute LB improvements (relative to current node LB) ---
+        # For infeasible side, treat delta as 0 for logging/pseudocosts (we don't use it when *_infeasible is True).
+        fix_delta = (fixed_lower_bound - self.local_lower_bound) if not fix_infeasible else 0.0
+        exc_delta = (excluded_lower_bound - self.local_lower_bound) if not exclude_infeasible else 0.0
+
+        # Only positive improvements should contribute to the score
+        fix_gain = max(fix_delta, 0.0)
+        exc_gain = max(exc_delta, 0.0)
+
+        # --- Score ---
+        # If one side is infeasible and the other is feasible, we want a "forced" decision.
+        # The hybrid / reliability code already treats `fix_infeasible` / `exclude_infeasible`
+        # as forcing edges_to_exclude / edges_to_fix, so we can just give any finite score here.
+        if not fix_infeasible and not exclude_infeasible:
+            # Your original product-based score, but using gains and a small epsilon
+            score = max(fix_gain, 1e-6) * max(exc_gain, 1e-6)
+        else:
+            # One side infeasible → the calling code will handle the forcing;
+            # we don't rely on the numeric score for ranking in that case.
+            score = float("inf")
+
         if self.verbose:
-            print(f"Edge {edge}: Score={score:.4f}, Fix Δ={fix_delta:.4f}, Exc Δ={exc_delta:.4f}")
-        
+            print(
+                f"Edge {edge}: "
+                f"score={score:.6g}, "
+                f"fix_LB={fixed_lower_bound:.6g}, exc_LB={excluded_lower_bound:.6g}, "
+                f"Δfix={fix_delta:.6g}, Δexc={exc_delta:.6g}, "
+                f"fix_inf={fix_infeasible}, exc_inf={exclude_infeasible}"
+            )
+
         return score, fix_delta, exc_delta, fix_infeasible, exclude_infeasible
+
     
     def simulate_fix_edge(self, u, v):
         normalized_edge = tuple(sorted((u, v)))
@@ -1255,4 +1439,3 @@ class MSTNode(Node):
             print(f"Slackness-based f={f:.2f} for edge {edge}")
         return max(0.01, min(0.99, f))  # Clamp away from 0/1 to avoid div-by-zero
     
-

@@ -26,7 +26,7 @@ def parse_arguments():
     parser.add_argument(
         "--density",
         type=float,
-        default=0.3,
+        default=1,
         help="The density of the graph (default: 0.3)"
     )
     parser.add_argument(
@@ -191,7 +191,7 @@ if __name__ == "__main__":
         initial_lambda=0.05,
         inherit_lambda=args.inherit_lambda,
         branching_rule=args.rule,
-        step_size=0.00001,
+        step_size=0.001,
         inherit_step_size=args.inherit_step_size,
         use_cover_cuts=args.cover_cuts,
         cut_frequency=args.cut_frequency,
