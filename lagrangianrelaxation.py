@@ -64,7 +64,7 @@ class LagrangianMST:
 
 
     def __init__(self, edges, num_nodes, budget, fixed_edges=None, excluded_edges=None,
-                 initial_lambda=0.05, step_size=0.001, max_iter=10, p=0.95,
+                 initial_lambda=0.05, step_size=0.001, max_iter=15, p=0.95,
                  use_cover_cuts=False, cut_frequency=5, use_bisection=False,
                  verbose=False, shared_graph=None):
         start_time = time()
@@ -882,7 +882,7 @@ class LagrangianMST:
             # Ensure λ starts in a reasonable range (consistent with compute_modified_weights)
             self.lmbda = max(0.0, min(getattr(self, "lmbda", 0.05), 1e4))
 
-            no_improvement_count = 0
+            # no_improvement_count = 0
             polyak_enabled       = True
 
             # Collect newly generated cuts at this node
@@ -1084,7 +1084,7 @@ class LagrangianMST:
             cut_edge_idx_all  = []
             # rhs_eff_vec       = np.zeros(0, dtype=float)
             rhs_vec           = np.zeros(0, dtype=float)
-            if self.use_cover_cuts:
+            if self.use_cover_cuts and self.best_cuts and mu_dynamic_here:
                 _rebuild_cut_structures()
 
             # Track usefulness of cuts at this node
@@ -1104,7 +1104,7 @@ class LagrangianMST:
 
             prev_weights   = None
             prev_mst_edges = None
-            last_g_lambda  = None
+            # last_g_lambda  = None
 
             if not hasattr(self, "_mst_mask") or self._mst_mask.size != len(self.edge_weights):
                 self._mst_mask = np.zeros(len(self.edge_weights), dtype=bool)
@@ -1248,13 +1248,13 @@ class LagrangianMST:
                         self.best_mst_edges   = self.last_mst_edges
                         self.best_cost        = mst_cost
                         self.best_cut_multipliers_for_best_bound = self.best_cut_multipliers.copy()
-                        no_improvement_count  = 0
-                    else:
-                        no_improvement_count += 1
-                        if no_improvement_count % CLEANUP_INTERVAL == 0:
-                            self.primal_solutions = self.primal_solutions[-MAX_SOLUTIONS:]
-                else:
-                    no_improvement_count += 1
+                        # no_improvement_count  = 0
+                    # else:
+                    #     # no_improvement_count += 1
+                    #     if no_improvement_count % CLEANUP_INTERVAL == 0:
+                    #         self.primal_solutions = self.primal_solutions[-MAX_SOLUTIONS:]
+                # else:
+                #     no_improvement_count += 1
 
                 # 4) Subgradients
                 knapsack_subgradient = float(mst_length - self.budget)
@@ -1278,7 +1278,7 @@ class LagrangianMST:
                 else:
                     cut_subgradients = []
 
-                self.subgradients.append(knapsack_subgradient)
+                # self.subgradients.append(knapsack_subgradient)
                 norm_sq = knapsack_subgradient ** 2
                 for g in cut_subgradients:
                     norm_sq += g ** 2
@@ -1328,38 +1328,15 @@ class LagrangianMST:
                 self.step_sizes.append(alpha)
                 self.multipliers.append((self.lmbda, self.best_cut_multipliers.copy()))
 
-                # stagnation check for λ
-                # if last_g_lambda is not None and abs(knapsack_subgradient - last_g_lambda) < 1e-6:
-                #     self.consecutive_same_subgradient = getattr(self, 'consecutive_same_subgradient', 0) + 1
-                #     if self.consecutive_same_subgradient > 10:
-                #         # Only allow stagnation termination if:
-                #         # - not at root, or
-                #         # - at root but we are no longer waiting for a violating MST
-                #         if not (is_root and root_pending_sep and cutting_active_here and self.use_cover_cuts):
-                #             if self.verbose:
-                #                 print("Terminating early: subgradient stagnation")
-                #             break
-                #     current_step = getattr(self, "step_size", 1e-3)
-                #     self.step_size = max(1e-8, current_step * 0.7)
-                # else:
-                #     self.consecutive_same_subgradient = 0
-                # last_g_lambda = knapsack_subgradient
 
-                if self.verbose and iter_num % 10 == 0:
-                    print(
-                        f"Subgrad Iter {iter_num}: λ={self.lmbda:.6f}, "
-                        f"len={mst_length:.2f}, gλ={knapsack_subgradient:.2f}, "
-                        f"cuts={len(self.best_cuts)}"
-                    )
                 
-
             # ------------------------------------------------------------------
             # 6) Drop "dead" cuts globally (never violated & μ tiny historically)
             #     - now more conservative: drop only if
             #       * never violated here
             #       * AND both current and historical μ are tiny
             # ------------------------------------------------------------------
-            if self.use_cover_cuts and self.best_cuts:
+            if self.use_cover_cuts and self.best_cuts and mu_dynamic_here:
                 keep_indices = []
 
                 parent_mu_map = getattr(

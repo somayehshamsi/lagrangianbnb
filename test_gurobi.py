@@ -336,7 +336,7 @@ def solve_with_gurobi(instance, seed, verbose=False):
     # Gurobi model
     model = gp.Model("MST_Knapsack_SingleCommodityFlow")
     model.setParam("OutputFlag", 1 if verbose else 0)  # Verbose logging
-    model.setParam("TimeLimit", 2700)  # 1 hour limit
+    model.setParam("TimeLimit", 1800)  # 1 hour limit
     model.setParam("MIPGap", 0.003)  # Small gap for convergence
 
     # Variables

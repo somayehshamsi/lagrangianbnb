@@ -50,7 +50,7 @@ class MSTNode(Node):
                  initial_lambda=0.05, inherit_lambda=False, branching_rule="random_mst",
                  step_size=0.001, inherit_step_size=False, use_cover_cuts=False, cut_frequency=5,
                  node_cut_frequency=10, parent_cover_cuts=None, parent_cover_multipliers=None,
-                 use_bisection=False, max_iter=10, verbose=False, depth=0,
+                 use_bisection=False, max_iter=12, verbose=False, depth=0,
                  pseudocosts_up=None, pseudocosts_down=None, counts_up=None, counts_down=None,
                  reliability_eta=5, lookahead_lambda=4):
         if depth == 0:
