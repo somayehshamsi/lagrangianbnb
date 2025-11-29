@@ -127,7 +127,7 @@ def run_experiment(instance, seed, config, args):
     pseudocosts_down = defaultdict(float)
     counts_up = defaultdict(int)
     counts_down = defaultdict(int)
-    reliability_eta = 8
+    reliability_eta = 3
     lookahead_lambda = 4
 
 
