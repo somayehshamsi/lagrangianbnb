@@ -200,7 +200,7 @@ if __name__ == "__main__":
         parent_cover_cuts=None,
         parent_cover_multipliers=None,
         use_bisection=args.use_bisection,
-        reliability_eta=8,  # Or argparse it
+        reliability_eta=3,  # Or argparse it
         lookahead_lambda=4,
         # partial_iters=5
     )

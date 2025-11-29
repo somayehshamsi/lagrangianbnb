@@ -446,7 +446,9 @@ class BranchAndBound:
 
                         children = node.create_children(branched_variable)
 
-                        if hasattr(node, "branching_rule") and node.branching_rule in ["pseudocost", "reliability"]:
+                        # if hasattr(node, "branching_rule") and node.branching_rule in ["pseudocost", "reliability"]:
+                        if hasattr(node, "branching_rule") and node.branching_rule in ["pseudocost"]:
+# 
                             branched_edge = branched_variable
                             f = node.get_fractional_value(branched_edge)
                             for child in children:

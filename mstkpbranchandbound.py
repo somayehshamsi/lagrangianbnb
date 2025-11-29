@@ -61,10 +61,22 @@ class MSTNode(Node):
             )
             MSTNode._solver_pool = None  # reset pool for a fresh instance
 
-        self.pseudocosts_up = pseudocosts_up or defaultdict(float)
-        self.pseudocosts_down = pseudocosts_down or defaultdict(float)
-        self.counts_up = counts_up or defaultdict(int)
-        self.counts_down = counts_down or defaultdict(int)
+        # self.pseudocosts_up = pseudocosts_up or defaultdict(float)
+        # self.pseudocosts_down = pseudocosts_down or defaultdict(float)
+        # self.counts_up = counts_up or defaultdict(int)
+        # self.counts_down = counts_down or defaultdict(int)
+        self.pseudocosts_up = (
+        pseudocosts_up if pseudocosts_up is not None else defaultdict(float)
+        )
+        self.pseudocosts_down = (
+            pseudocosts_down if pseudocosts_down is not None else defaultdict(float)
+        )
+        self.counts_up = (
+            counts_up if counts_up is not None else defaultdict(int)
+        )
+        self.counts_down = (
+            counts_down if counts_down is not None else defaultdict(int)
+        )
         self.reliability_eta = reliability_eta
 
 
@@ -673,10 +685,396 @@ class MSTNode(Node):
                             (u, v) not in self.branched_edges]
             return candidate_edges if candidate_edges else None
         
+        # elif self.branching_rule == "reliability":
+        #     # Get fractional solution for prioritization
+        #     shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
+        #     # shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
+
+        #     candidate_edges = []
+        #     if shor_primal_solution is not None:
+        #         tolerance = 1e-6
+        #         candidate_edges = [
+        #             e for e in shor_primal_solution
+        #             if e not in self.fixed_edges
+        #             and e not in self.excluded_edges
+        #             and e not in self.branched_edges
+        #             and shor_primal_solution[e] > 0.0
+        #             and shor_primal_solution[e] < 1.0
+        #         ]
+        #         candidate_edges.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
+
+        #     if shor_primal_solution is None or not candidate_edges:
+        #         mst_edges = [tuple(sorted((u, v))) for u, v in self.lagrangian_solver.best_mst_edges]
+        #         candidate_edges = [
+        #             e for e in mst_edges
+        #             if e not in self.fixed_edges
+        #             and e not in self.excluded_edges
+        #             and e not in self.branched_edges
+        #         ]
+
+        #     if not candidate_edges:
+        #         return None
+
+        #     # Separate by reliability
+        #     unhistoried = []
+        #     reliable_candidates = []
+        #     for e in candidate_edges:
+        #         cu = self.counts_up.get(e, 0)
+        #         cd = self.counts_down.get(e, 0)
+        #         if cu < self.reliability_eta or cd < self.reliability_eta:
+        #             unhistoried.append(e)
+        #         else:
+        #             reliable_candidates.append(e)
+
+        #     # Adaptive lookahead
+        #     duality_gap = (
+        #         self.best_upper_bound - self.local_lower_bound
+        #         if self.best_upper_bound < float("inf") else float("inf")
+        #     )
+        #     if self.depth < 5:
+        #         max_sb_evals = self.lookahead_lambda
+        #     else:
+        #         max_sb_evals = max(2, self.lookahead_lambda - 1)
+
+        #     # if shor_primal_solution is not None:
+
+        #     #     unhistoried.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
+
+        #     unhistoried = unhistoried[:max_sb_evals]
+
+        #     edges_to_fix = set()
+        #     edges_to_exclude = set()
+        #     best_score = float("-inf")
+        #     best_edge = None
+        #     scores = []
+
+        #     # Evaluate unreliable edges with strong branching
+        #     for edge in unhistoried:
+        #         # Better fractional estimation
+        #         if shor_primal_solution is not None and edge in shor_primal_solution:
+        #             f = shor_primal_solution[edge]
+        #             f = max(0.01, min(0.99, f))
+        #         else:
+        #             f = self.get_fractional_value(edge)
+
+        #         count_up = self.counts_up.get(edge, 0)
+        #         count_down = self.counts_down.get(edge, 0)
+
+
+        #         sb_score, fix_delta, exc_delta, fix_inf, exc_inf = self.calculate_strong_branching_score(edge)
+
+        #         # Adaptive learning rate
+        #         if count_up == 0 and count_down == 0:
+        #             alpha = 0.5
+        #         elif count_up < 3 or count_down < 3:
+        #             alpha = 0.3
+        #         else:
+        #             alpha = 0.1
+
+        #         # Update pseudocosts (UP / fix = x_e → 1)
+        #         if not fix_inf and (1 - f) > 1e-6:
+        #             new_pc_up = max(0, fix_delta) / max(1e-9, (1 - f))
+        #             if count_up == 0:
+        #                 self.pseudocosts_up[edge] = new_pc_up
+        #             else:
+        #                 old_pc = self.pseudocosts_up.get(edge, 0)
+        #                 if not math.isnan(old_pc) and not math.isinf(old_pc):
+        #                     self.pseudocosts_up[edge] = (1 - alpha) * old_pc + alpha * new_pc_up
+        #                 else:
+        #                     self.pseudocosts_up[edge] = new_pc_up
+        #             self.counts_up[edge] = count_up + 1
+
+        #         # Update pseudocosts (DOWN / exclude = x_e → 0)
+        #         if not exc_inf and f > 1e-6:
+        #             new_pc_down = max(0, exc_delta) / max(1e-9, f)
+        #             if count_down == 0:
+        #                 self.pseudocosts_down[edge] = new_pc_down
+        #             else:
+        #                 old_pc = self.pseudocosts_down.get(edge, 0)
+        #                 if not math.isnan(old_pc) and not math.isinf(old_pc):
+        #                     self.pseudocosts_down[edge] = (1 - alpha) * old_pc + alpha * new_pc_down
+        #                 else:
+        #                     self.pseudocosts_down[edge] = new_pc_down
+        #             self.counts_down[edge] = count_down + 1
+
+        #         # DEBUG: state after strong branching update for this edge
+        #         # print(
+        #         #     f"[RLB] NodeDepth={self.depth} EDGE={edge} AFTER_SB "
+        #         #     f"pc_up={self.pseudocosts_up.get(edge, None)} "
+        #         #     f"pc_down={self.pseudocosts_down.get(edge, None)} "
+        #         #     f"counts=({self.counts_up.get(edge, 0)}, {self.counts_down.get(edge, 0)}) "
+        #         #     f"fix_inf={fix_inf} exc_inf={exc_inf} sb_score={sb_score:.4f}"
+        #         # )
+
+        #         # Process SB outcome
+        #         if not fix_inf and not exc_inf:
+        #             scores.append((sb_score, edge, fix_inf, exc_inf))
+        #             if sb_score > best_score:
+        #                 best_score = sb_score
+        #                 best_edge = edge
+        #         else:
+        #             # If one side is infeasible, we can force the other decision
+        #             if fix_inf:
+        #                 edges_to_exclude.add(edge)
+        #             if exc_inf:
+        #                 edges_to_fix.add(edge)
+
+        #     # Evaluate reliable candidates using pseudocosts
+        #     for edge in reliable_candidates:
+        #         if shor_primal_solution is not None and edge in shor_primal_solution:
+        #             f = shor_primal_solution[edge]
+        #             f = max(0.01, min(0.99, f))
+        #         else:
+        #             f = self.get_fractional_value(edge)
+
+        #         pc_up = self.pseudocosts_up.get(edge, 1.0)
+        #         pc_down = self.pseudocosts_down.get(edge, 1.0)
+
+        #         count_up = self.counts_up.get(edge, 0)
+        #         count_down = self.counts_down.get(edge, 0)
+
+        #         # Confidence-weighted scoring
+        #         confidence_up = min(1.0, count_up / (2 * self.reliability_eta))
+        #         confidence_down = min(1.0, count_down / (2 * self.reliability_eta))
+        #         confidence = (confidence_up + confidence_down) / 2
+
+        #         delta_up = pc_up * (1 - f)
+        #         delta_down = pc_down * f
+        #         geometric_mean = (delta_up * delta_down) ** 0.5
+        #         score = geometric_mean * (0.9 + 0.1 * confidence)
+
+        #         scores.append((score, edge, False, False))
+
+        #     if not scores and not (edges_to_fix or edges_to_exclude):
+        #         return None
+
+        #     # Handle forced decisions
+        #     if edges_to_fix or edges_to_exclude:
+        #         if self.verbose:
+        #             print(f"[RLB] FORCED CHILD: fix={edges_to_fix}, exclude={edges_to_exclude}")
+        #         child = self.create_single_child(edges_to_fix, edges_to_exclude)
+        #         return ([list(edges_to_fix)[0] if edges_to_fix else list(edges_to_exclude)[0]], child)
+        #     else:
+        #         scores.sort(key=lambda x: x[0], reverse=True)
+        #         best_score, best_edge, fix_inf, exc_inf = scores[0]
+
+        #         if self.verbose:
+        #             print(f"[RLB] SELECTED best_edge={best_edge} score={best_score:.4f}")
+
+        #     return [best_edge]
+        # elif self.branching_rule == "reliability":
+        #     # 1) Fractional solution for prioritization
+        #     shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
+
+        #     candidate_edges = []
+        #     if shor_primal_solution is not None:
+        #         tolerance = 1e-6
+        #         candidate_edges = [
+        #             e for e in shor_primal_solution
+        #             if e not in self.fixed_edges
+        #             and e not in self.excluded_edges
+        #             and e not in self.branched_edges
+        #             and shor_primal_solution[e] > tolerance
+        #             and shor_primal_solution[e] < 1.0 - tolerance
+        #         ]
+        #         # most fractional first
+        #         candidate_edges.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
+
+        #     if shor_primal_solution is None or not candidate_edges:
+        #         mst_edges = [tuple(sorted((u, v))) for u, v in self.lagrangian_solver.best_mst_edges]
+        #         candidate_edges = [
+        #             e for e in mst_edges
+        #             if e not in self.fixed_edges
+        #             and e not in self.excluded_edges
+        #             and e not in self.branched_edges
+        #         ]
+
+        #     if not candidate_edges:
+        #         return None
+
+        #     # 2) Split into unhistoried vs reliable, based on TOTAL observations
+        #     unhistoried = []
+        #     reliable_candidates = []
+        #     for e in candidate_edges:
+        #         cu = self.counts_up.get(e, 0)
+        #         cd = self.counts_down.get(e, 0)
+
+        #         # print("counts",  cu, cd)
+        #         total = cu + cd
+        #         if total >= self.reliability_eta:
+        #             reliable_candidates.append(e)
+        #         else:
+        #             unhistoried.append(e)
+
+        #     # 3) Adaptive lookahead: how many edges to strong-branch
+        #     if self.depth < 5:
+        #         max_sb_evals = self.lookahead_lambda
+        #     else:
+        #         max_sb_evals = max(2, self.lookahead_lambda - 1)
+
+        #     # Strong branching only on the most fractional unhistoried edges
+        #     if shor_primal_solution is not None:
+        #         unhistoried.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
+        #         reliable_candidates.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
+
+        #     else:
+        #         unhistoried.sort(key=lambda e: abs(self.get_fractional_value(e) - 0.5))
+        #         reliable_candidates.sort(key=lambda e: abs(self.get_fractional_value(e) - 0.5))
+
+
+        #     unhistoried = unhistoried[:max_sb_evals]
+
+        #     edges_to_fix = set()
+        #     edges_to_exclude = set()
+        #     scores = []
+
+        #     # 4) Strong branching on unhistoried edges (also updates pseudocosts)
+        #     for edge in unhistoried:
+        #         if shor_primal_solution is not None and edge in shor_primal_solution:
+        #             f = shor_primal_solution[edge]
+        #         else:
+        #             f = self.get_fractional_value(edge)
+        #         f = max(0.01, min(0.99, f))
+
+        #         count_up = self.counts_up.get(edge, 0)
+        #         count_down = self.counts_down.get(edge, 0)
+
+        #         sb_score, fix_delta, exc_delta, fix_inf, exc_inf = self.calculate_strong_branching_score(edge)
+        #         # print("unhistoriedscore", sb_score)
+
+        #         # adaptive learning rate
+        #         if count_up == 0 and count_down == 0:
+        #             alpha = 0.5
+        #         elif count_up < 3 or count_down < 3:
+        #             alpha = 0.3
+        #         else:
+        #             alpha = 0.1
+
+        #         # update pseudocosts up
+        #         if not fix_inf and (1 - f) > 1e-6:
+        #             new_pc_up = max(0, fix_delta) / max(1e-9, (1 - f))
+        #             old = self.pseudocosts_up.get(edge, None)
+        #             if old is None or math.isnan(old) or math.isinf(old):
+        #                 self.pseudocosts_up[edge] = new_pc_up
+        #             else:
+        #                 self.pseudocosts_up[edge] = (1 - alpha) * old + alpha * new_pc_up
+        #             self.counts_up[edge] = count_up + 1
+
+        #         # update pseudocosts down
+        #         if not exc_inf and f > 1e-6:
+        #             new_pc_down = max(0, exc_delta) / max(1e-9, f)
+        #             old = self.pseudocosts_down.get(edge, None)
+        #             if old is None or math.isnan(old) or math.isinf(old):
+        #                 self.pseudocosts_down[edge] = new_pc_down
+        #             else:
+        #                 self.pseudocosts_down[edge] = (1 - alpha) * old + alpha * new_pc_down
+        #             self.counts_down[edge] = count_down + 1
+
+        #         if not fix_inf and not exc_inf:
+        #             scores.append((sb_score, edge, False, False))
+        #         else:
+        #             if fix_inf:
+        #                 edges_to_exclude.add(edge)
+        #             if exc_inf:
+        #                 edges_to_fix.add(edge)
+
+        #     # 5) Pseudocost scoring for reliable edges
+        #     for edge in reliable_candidates:
+        #         if shor_primal_solution is not None and edge in shor_primal_solution:
+        #             f = shor_primal_solution[edge]
+        #         else:
+        #             f = self.get_fractional_value(edge)
+        #         f = max(0.01, min(0.99, f))
+
+        #         pc_up = self.pseudocosts_up.get(edge, 1.0)
+        #         pc_down = self.pseudocosts_down.get(edge, 1.0)
+
+        #         cu = self.counts_up.get(edge, 0)
+        #         cd = self.counts_down.get(edge, 0)
+        #         confidence_up = min(1.0, cu / (2 * self.reliability_eta))
+        #         confidence_down = min(1.0, cd / (2 * self.reliability_eta))
+        #         confidence = 0.5 * (confidence_up + confidence_down)
+
+        #         # delta_up = pc_up * (1 - f)
+        #         # delta_down = pc_down * f
+        #         # geometric_mean = max(1e-9, delta_up * delta_down) ** 0.5
+        #         # score = geometric_mean * (0.9 + 0.1 * confidence)
+        #         # print("realiablescore", score)
+
+        #         # scores.append((score, edge, False, False))
+        #         delta_up = pc_up * (1 - f)
+        #         delta_down = pc_down * f
+
+        #         # Use product, like in strong branching, to match scale
+        #         gain_up = max(delta_up, 0.0)
+        #         gain_down = max(delta_down, 0.0)
+
+        #         score = max(gain_up, 1e-6) * max(gain_down, 1e-6)
+
+        #         # Optional: keep a small confidence modulation, but don't shrink the scale too much
+        #         score *= (0.9 + 0.1 * confidence)
+
+        #         # print("reliablescore", score)
+
+        #         scores.append((score, edge, False, False))
+
+
+        #     if not scores and not (edges_to_fix or edges_to_exclude):
+        #         return None
+
+        #     # 6) Forced decisions from infeasible SB sides
+        #     if edges_to_fix or edges_to_exclude:
+        #         if self.verbose:
+        #             print(f"[RLB] FORCED CHILD: fix={edges_to_fix}, exclude={edges_to_exclude}")
+        #         child = self.create_single_child(edges_to_fix, edges_to_exclude)
+        #         # pick any representative edge for logging
+        #         rep = list(edges_to_fix)[0] if edges_to_fix else list(edges_to_exclude)[0]
+        #         return ([rep], child)
+
+        #     # 7) Normal case: choose best score
+        #     scores.sort(key=lambda x: x[0], reverse=True)
+        #     best_score, best_edge, _, _ = scores[0]
+
+        #     if self.verbose:
+        #         print(f"[RLB] SELECTED best_edge={best_edge} score={best_score:.4f}")
+
+        #     return [best_edge]
         elif self.branching_rule == "reliability":
-            # Get fractional solution for prioritization
+            # 1) Candidate edges: current MST edges (no fractional needed)
+            # mst_edges = [tuple(sorted((u, v))) for u, v in self.lagrangian_solver.best_mst_edges]
+            # candidate_edges = [
+            #     e for e in mst_edges
+            #     if e not in self.fixed_edges
+            #     and e not in self.excluded_edges
+            #     and e not in self.branched_edges
+            # ]
+
+            # if not candidate_edges:
+            #     return None
+
+            # # 2) Split into unhistoried vs reliable, based on TOTAL observations
+            # unhistoried = []
+            # reliable_candidates = []
+            # for e in candidate_edges:
+            #     cu = self.counts_up.get(e, 0)
+            #     cd = self.counts_down.get(e, 0)
+            #     total = cu + cd
+            #     if total >= self.reliability_eta:
+            #         reliable_candidates.append(e)
+            #     else:
+            #         unhistoried.append(e)
+
+            # # 3) Adaptive lookahead: how many edges to strong-branch
+            # if self.depth < 5:
+            #     max_sb_evals = self.lookahead_lambda
+            # else:
+            #     max_sb_evals = max(2, self.lookahead_lambda - 1)
+
+            # # You can optionally order unhistoried by some heuristic, e.g. by edge weight/length.
+            # # For now, we just take them as they come from MST.
+            # unhistoried = unhistoried[:max_sb_evals]
+            # 1) Fractional solution for prioritization
             shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
-            # shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
 
             candidate_edges = []
             if shor_primal_solution is not None:
@@ -686,9 +1084,10 @@ class MSTNode(Node):
                     if e not in self.fixed_edges
                     and e not in self.excluded_edges
                     and e not in self.branched_edges
-                    and shor_primal_solution[e] > 0.0
-                    and shor_primal_solution[e] < 1.0
+                    and shor_primal_solution[e] > tolerance
+                    and shor_primal_solution[e] < 1.0 - tolerance
                 ]
+                # most fractional first
                 candidate_edges.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
 
             if shor_primal_solution is None or not candidate_edges:
@@ -703,52 +1102,57 @@ class MSTNode(Node):
             if not candidate_edges:
                 return None
 
-            # Separate by reliability
+            # 2) Split into unhistoried vs reliable, based on TOTAL observations
             unhistoried = []
             reliable_candidates = []
             for e in candidate_edges:
                 cu = self.counts_up.get(e, 0)
                 cd = self.counts_down.get(e, 0)
-                if cu < self.reliability_eta or cd < self.reliability_eta:
-                    unhistoried.append(e)
-                else:
-                    reliable_candidates.append(e)
 
-            # Adaptive lookahead
-            duality_gap = (
-                self.best_upper_bound - self.local_lower_bound
-                if self.best_upper_bound < float("inf") else float("inf")
-            )
+                # print("counts",  cu, cd)
+                total = cu + cd
+                if total >= self.reliability_eta:
+                    reliable_candidates.append(e)
+                else:
+                    unhistoried.append(e)
+
+            # 3) Adaptive lookahead: how many edges to strong-branch
             if self.depth < 5:
                 max_sb_evals = self.lookahead_lambda
+                # max_sb_evals = 1
+
             else:
-                max_sb_evals = max(2, self.lookahead_lambda - 1)
+                # max_sb_evals = max(2, self.lookahead_lambda - 1)
+                max_sb_evals = 1
+
+
+            # Strong branching only on the most fractional unhistoried edges
+            if shor_primal_solution is not None:
+                unhistoried.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
+                reliable_candidates.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
+
+            else:
+                unhistoried.sort(key=lambda e: abs(self.get_fractional_value(e) - 0.5))
+                reliable_candidates.sort(key=lambda e: abs(self.get_fractional_value(e) - 0.5))
 
 
             unhistoried = unhistoried[:max_sb_evals]
-
             edges_to_fix = set()
             edges_to_exclude = set()
-            best_score = float("-inf")
-            best_edge = None
             scores = []
 
-            # Evaluate unreliable edges with strong branching
+            # 4) Strong branching on unhistoried edges (also updates pseudocosts)
             for edge in unhistoried:
-                # Better fractional estimation
-                if shor_primal_solution is not None and edge in shor_primal_solution:
-                    f = shor_primal_solution[edge]
-                    f = max(0.01, min(0.99, f))
-                else:
-                    f = self.get_fractional_value(edge)
+                # Strong branching returns LB improvements for fix/exclude
+                sb_score, fix_delta, exc_delta, fix_inf, exc_inf = self.calculate_strong_branching_score(edge)
+                if self.verbose:
+                    print("unhistoriedscore", edge, sb_score)
 
+                # Get current counts
                 count_up = self.counts_up.get(edge, 0)
                 count_down = self.counts_down.get(edge, 0)
 
-
-                sb_score, fix_delta, exc_delta, fix_inf, exc_inf = self.calculate_strong_branching_score(edge)
-
-                # Adaptive learning rate
+                # Learning rate (EMA over LB gains)
                 if count_up == 0 and count_down == 0:
                     alpha = 0.5
                 elif count_up < 3 or count_down < 3:
@@ -756,116 +1160,97 @@ class MSTNode(Node):
                 else:
                     alpha = 0.1
 
-                # Update pseudocosts (UP / fix = x_e → 1)
-                if not fix_inf and (1 - f) > 1e-6:
-                    new_pc_up = max(0, fix_delta) / max(1e-9, (1 - f))
-                    if count_up == 0:
+                # Update pseudocosts UP: use raw LB improvement (no division by f)
+                if not fix_inf:
+                    new_pc_up = max(0.0, fix_delta)
+                    old = self.pseudocosts_up.get(edge, None)
+                    if old is None or math.isnan(old) or math.isinf(old):
                         self.pseudocosts_up[edge] = new_pc_up
                     else:
-                        old_pc = self.pseudocosts_up.get(edge, 0)
-                        if not math.isnan(old_pc) and not math.isinf(old_pc):
-                            self.pseudocosts_up[edge] = (1 - alpha) * old_pc + alpha * new_pc_up
-                        else:
-                            self.pseudocosts_up[edge] = new_pc_up
+                        self.pseudocosts_up[edge] = (1 - alpha) * old + alpha * new_pc_up
                     self.counts_up[edge] = count_up + 1
 
-                # Update pseudocosts (DOWN / exclude = x_e → 0)
-                if not exc_inf and f > 1e-6:
-                    new_pc_down = max(0, exc_delta) / max(1e-9, f)
-                    if count_down == 0:
+                # Update pseudocosts DOWN: same idea
+                if not exc_inf:
+                    new_pc_down = max(0.0, exc_delta)
+                    old = self.pseudocosts_down.get(edge, None)
+                    if old is None or math.isnan(old) or math.isinf(old):
                         self.pseudocosts_down[edge] = new_pc_down
                     else:
-                        old_pc = self.pseudocosts_down.get(edge, 0)
-                        if not math.isnan(old_pc) and not math.isinf(old_pc):
-                            self.pseudocosts_down[edge] = (1 - alpha) * old_pc + alpha * new_pc_down
-                        else:
-                            self.pseudocosts_down[edge] = new_pc_down
+                        self.pseudocosts_down[edge] = (1 - alpha) * old + alpha * new_pc_down
                     self.counts_down[edge] = count_down + 1
 
-                # DEBUG: state after strong branching update for this edge
-                # print(
-                #     f"[RLB] NodeDepth={self.depth} EDGE={edge} AFTER_SB "
-                #     f"pc_up={self.pseudocosts_up.get(edge, None)} "
-                #     f"pc_down={self.pseudocosts_down.get(edge, None)} "
-                #     f"counts=({self.counts_up.get(edge, 0)}, {self.counts_down.get(edge, 0)}) "
-                #     f"fix_inf={fix_inf} exc_inf={exc_inf} sb_score={sb_score:.4f}"
-                # )
-
-                # Process SB outcome
+                # Store SB score if both sides feasible
                 if not fix_inf and not exc_inf:
-                    scores.append((sb_score, edge, fix_inf, exc_inf))
-                    if sb_score > best_score:
-                        best_score = sb_score
-                        best_edge = edge
+                    scores.append((sb_score, edge, False, False))
                 else:
-                    # If one side is infeasible, we can force the other decision
                     if fix_inf:
                         edges_to_exclude.add(edge)
                     if exc_inf:
                         edges_to_fix.add(edge)
 
-            # Evaluate reliable candidates using pseudocosts
+            # 5) Pseudocost scoring for reliable edges (no fractional x)
             for edge in reliable_candidates:
-                if shor_primal_solution is not None and edge in shor_primal_solution:
-                    f = shor_primal_solution[edge]
-                    f = max(0.01, min(0.99, f))
-                else:
-                    f = self.get_fractional_value(edge)
+                pc_up = self.pseudocosts_up.get(edge, 0.0)
+                pc_down = self.pseudocosts_down.get(edge, 0.0)
 
-                pc_up = self.pseudocosts_up.get(edge, 1.0)
-                pc_down = self.pseudocosts_down.get(edge, 1.0)
+                cu = self.counts_up.get(edge, 0)
+                cd = self.counts_down.get(edge, 0)
+                confidence_up = min(1.0, cu / (2 * self.reliability_eta))
+                confidence_down = min(1.0, cd / (2 * self.reliability_eta))
+                confidence = 0.5 * (confidence_up + confidence_down)
 
-                count_up = self.counts_up.get(edge, 0)
-                count_down = self.counts_down.get(edge, 0)
+                gain_up = max(pc_up, 0.0)
+                gain_down = max(pc_down, 0.0)
 
-                # Confidence-weighted scoring
-                confidence_up = min(1.0, count_up / (2 * self.reliability_eta))
-                confidence_down = min(1.0, count_down / (2 * self.reliability_eta))
-                confidence = (confidence_up + confidence_down) / 2
+                score = max(gain_up, 1e-6) * max(gain_down, 1e-6)
+                score *= (0.9 + 0.1 * confidence)
 
-                delta_up = pc_up * (1 - f)
-                delta_down = pc_down * f
-                geometric_mean = (delta_up * delta_down) ** 0.5
-                score = geometric_mean * (0.9 + 0.1 * confidence)
+                if self.verbose:
+                    print("reliablescore", edge, score)
 
                 scores.append((score, edge, False, False))
 
             if not scores and not (edges_to_fix or edges_to_exclude):
                 return None
 
-            # Handle forced decisions
+            # 6) Forced decisions from infeasible SB sides
             if edges_to_fix or edges_to_exclude:
                 if self.verbose:
                     print(f"[RLB] FORCED CHILD: fix={edges_to_fix}, exclude={edges_to_exclude}")
                 child = self.create_single_child(edges_to_fix, edges_to_exclude)
-                return ([list(edges_to_fix)[0] if edges_to_fix else list(edges_to_exclude)[0]], child)
-            else:
-                scores.sort(key=lambda x: x[0], reverse=True)
-                best_score, best_edge, fix_inf, exc_inf = scores[0]
+                rep = list(edges_to_fix)[0] if edges_to_fix else list(edges_to_exclude)[0]
+                return ([rep], child)
 
-                if self.verbose:
-                    print(f"[RLB] SELECTED best_edge={best_edge} score={best_score:.4f}")
+            # 7) Normal case: choose best score
+            scores.sort(key=lambda x: x[0], reverse=True)
+            best_score, best_edge, _, _ = scores[0]
+
+            if self.verbose:
+                origin = "reliable" if best_edge in reliable_candidates else "unhistoried"
+                print(f"[RLB] SELECTED best_edge={best_edge} from {origin} score={best_score:.4f}")
 
             return [best_edge]
+
 
 
               
         elif self.branching_rule == "hybrid_strong_fractional":
 
             # --- Adaptive criteria for choosing strong vs fractional branching ---
-            bu = self.best_upper_bound
-            lb = self.local_lower_bound
-            if math.isfinite(bu) and math.isfinite(lb):
-                denom = max(abs(bu), abs(lb), 1.0)
-                gap_ratio = (bu - lb) / denom
-            else:
-                # treat as large gap early on when bounds aren't finite yet
-                gap_ratio = 1.0
+            # bu = self.best_upper_bound
+            # lb = self.local_lower_bound
+            # if math.isfinite(bu) and math.isfinite(lb):
+            #     denom = max(abs(bu), abs(lb), 1.0)
+            #     gap_ratio = (bu - lb) / denom
+            # else:
+            #     # treat as large gap early on when bounds aren't finite yet
+            #     gap_ratio = 1.0
 
             use_strong_branching = (
                 self.depth < 5
                 # or (self.depth < 10 and (len(self.fixed_edges) + len(self.excluded_edges)) < 0.1 * len(self.edges))
-                or (gap_ratio > 0.99)  # large gap remaining (keep your threshold)
+                # or (gap_ratio > 0.99)  # large gap remaining (keep your threshold)
             )
             if use_strong_branching:
                 # Strong branching phase with computational limits
