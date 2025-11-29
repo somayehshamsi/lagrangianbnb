@@ -8,6 +8,7 @@ MAX_EDGE_LENGTH = 100
 CONVEX_BUDGET_FACTOR = 0.2
 
 
+
 class MSTKPInstance:
     """
     Represents an instance of the MST problem with an extra knapsack constraint.
@@ -67,14 +68,14 @@ class MSTKPInstance:
         self.tl = nx.minimum_spanning_tree(self.graph, weight="length")
 
         # Step 4: Compute budget
-        total_tw_weight = sum(d["weight"] for _, _, d in self.tw.edges(data=True))
-        total_tl_weight = sum(d["weight"] for _, _, d in self.tl.edges(data=True))
+        total_tw_weight = sum(d["length"] for _, _, d in self.tw.edges(data=True))
+        total_tl_weight = sum(d["length"] for _, _, d in self.tl.edges(data=True))
 
         assert 0 <= CONVEX_BUDGET_FACTOR <= 1
         self.budget = int(CONVEX_BUDGET_FACTOR * total_tw_weight + (1 - CONVEX_BUDGET_FACTOR) * total_tl_weight)
         # self.budget = self.num_nodes * 20 -20
         # self.budget=900]
-        assert total_tw_weight <= self.budget <= total_tl_weight
+        assert total_tl_weight <= self.budget <= total_tw_weight
         del self.graph
 
     def print_all_edges(self):
