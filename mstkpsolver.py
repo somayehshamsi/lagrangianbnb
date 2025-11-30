@@ -189,7 +189,7 @@ if __name__ == "__main__":
         mstkp_instance.edges,
         mstkp_instance.num_nodes,
         mstkp_instance.budget,
-        initial_lambda=0.05,
+        initial_lambda=0.4,
         inherit_lambda=args.inherit_lambda,
         branching_rule=args.rule,
         step_size=0.001,

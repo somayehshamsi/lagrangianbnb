@@ -47,10 +47,10 @@ class MSTNode(Node):
     _solver_pool = None  # shared across all nodes in one solve
 
     def __init__(self, edges, num_nodes, budget, fixed_edges=set(), excluded_edges=set(), branched_edges=set(),
-                 initial_lambda=0.05, inherit_lambda=False, branching_rule="random_mst",
+                 initial_lambda=0.4, inherit_lambda=False, branching_rule="random_mst",
                  step_size=0.001, inherit_step_size=False, use_cover_cuts=False, cut_frequency=5,
                  node_cut_frequency=10, parent_cover_cuts=None, parent_cover_multipliers=None,
-                 use_bisection=False, max_iter=10, verbose=False, depth=0,
+                 use_bisection=False, max_iter=12, verbose=False, depth=0,
                  pseudocosts_up=None, pseudocosts_down=None, counts_up=None, counts_down=None,
                  reliability_eta=5, lookahead_lambda=4):
         if depth == 0:
@@ -94,7 +94,7 @@ class MSTNode(Node):
         self.budget = budget
 
         self.inherit_lambda = inherit_lambda
-        self.initial_lambda = initial_lambda if initial_lambda is not None else 0.05
+        self.initial_lambda = initial_lambda if initial_lambda is not None else 0.4
         self.branching_rule = branching_rule
         self.step_size = step_size
         self.inherit_step_size = inherit_step_size
@@ -108,7 +108,7 @@ class MSTNode(Node):
         self.lagrangian_solver = LagrangianMST(
             MSTNode.global_edges, num_nodes, budget, self.fixed_edges, self.excluded_edges,
             initial_lambda=self.initial_lambda if not inherit_lambda else initial_lambda,
-            step_size=self.step_size, max_iter=max_iter, p=0.95,
+            step_size=self.step_size, max_iter=max_iter, 
             use_cover_cuts=self.use_cover_cuts, cut_frequency=self.cut_frequency,
             use_bisection=self.use_bisection, verbose=self.verbose,
             shared_graph=MSTNode.global_graph
@@ -121,7 +121,7 @@ class MSTNode(Node):
                     MSTNode.global_edges, self.num_nodes, self.budget,
                     fixed_edges=set(), excluded_edges=set(),
                     initial_lambda=self.initial_lambda,
-                    step_size=self.step_size, max_iter=5, p=0.95,
+                    step_size=self.step_size, max_iter=5,
                     use_cover_cuts=self.use_cover_cuts, cut_frequency=self.cut_frequency,
                     use_bisection=False, verbose=False, shared_graph=MSTNode.global_graph
                 )
@@ -379,7 +379,7 @@ class MSTNode(Node):
                 fixed_child = MSTNode(
                     self.edges, self.num_nodes, self.budget,
                     F_fixed, set(self.excluded_edges), new_branched_edges,
-                    initial_lambda=solver.best_lambda if self.inherit_lambda else 0.05,
+                    initial_lambda=solver.best_lambda if self.inherit_lambda else 0.4,
                     inherit_lambda=self.inherit_lambda, branching_rule=self.branching_rule,
                     step_size=solver.step_size if self.inherit_step_size else 0.001,
                     inherit_step_size=self.inherit_step_size, use_cover_cuts=self.use_cover_cuts,
@@ -401,7 +401,7 @@ class MSTNode(Node):
         excluded_child = MSTNode(
             self.edges, self.num_nodes, self.budget,
             set(self.fixed_edges), F_excluded, new_branched_edges,
-            initial_lambda=solver.best_lambda if self.inherit_lambda else 0.05,
+            initial_lambda=solver.best_lambda if self.inherit_lambda else 0.4,
             inherit_lambda=self.inherit_lambda, branching_rule=self.branching_rule,
             step_size=solver.step_size if self.inherit_step_size else 0.001,
             inherit_step_size=self.inherit_step_size, use_cover_cuts=self.use_cover_cuts,
@@ -1527,7 +1527,7 @@ class MSTNode(Node):
             fixed_edges=child_fixed,
             excluded_edges=child_excl,
             branched_edges=new_branched_edges,
-            initial_lambda=solver.best_lambda if self.inherit_lambda else 0.05,
+            initial_lambda=solver.best_lambda if self.inherit_lambda else 0.4,
             inherit_lambda=self.inherit_lambda,
             branching_rule=self.branching_rule,
             step_size=solver.step_size if self.inherit_step_size else 0.001,
@@ -1626,7 +1626,7 @@ class MSTNode(Node):
             sim_solver.reset(
                 fixed_edges=new_fixed,
                 excluded_edges=new_excluded,
-                initial_lambda=getattr(self.lagrangian_solver, "best_lambda", getattr(self, "initial_lambda", 0.05)),
+                initial_lambda=getattr(self.lagrangian_solver, "best_lambda", getattr(self, "initial_lambda", 0.4)),
                 step_size=getattr(self.lagrangian_solver, "step_size", getattr(self, "step_size", 0.001)),
                 max_iter=int(max_iters),
                 use_cover_cuts=bool(getattr(self, "use_cover_cuts", False)),

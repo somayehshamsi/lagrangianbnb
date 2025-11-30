@@ -64,7 +64,7 @@ class LagrangianMST:
 
 
     def __init__(self, edges, num_nodes, budget, fixed_edges=None, excluded_edges=None,
-                 initial_lambda=0.05, step_size=0.001, max_iter=10, p=0.95,
+                 initial_lambda=0.4, step_size=0.001, max_iter=10, 
                  use_cover_cuts=False, cut_frequency=5, use_bisection=False,
                  verbose=False, shared_graph=None):
         start_time = time()
@@ -94,7 +94,7 @@ class LagrangianMST:
 
         self.lmbda = initial_lambda
         self.step_size = step_size
-        self.p = p
+        # self.p = p
         self.max_iter = max_iter
         self.use_bisection = use_bisection
         self.verbose = verbose
@@ -108,7 +108,7 @@ class LagrangianMST:
         self.subgradients = []
         self._MAX_HISTORY = 100
         self._primal_history_cap = 30
-        self._fractional_history_cap = 5
+        self._fractional_history_cap = 50
         self._subgradient_history_cap = 20
 
         self.best_lambda = self.lmbda
@@ -181,7 +181,7 @@ class LagrangianMST:
         if initial_lambda is not None:
             self.lmbda = float(initial_lambda)
         else:
-            self.lmbda = getattr(self, "lmbda", 0.05)
+            self.lmbda = getattr(self, "lmbda", 0.4)
 
         if step_size is not None:
             self.step_size = float(step_size)
@@ -880,7 +880,7 @@ class LagrangianMST:
             #         self.best_cut_multipliers[i] = 0.0
 
             # Ensure λ starts in a reasonable range (consistent with compute_modified_weights)
-            self.lmbda = max(0.0, min(getattr(self, "lmbda", 0.05), 1e4))
+            self.lmbda = max(0.0, min(getattr(self, "lmbda", 0.4), 1e4))
 
             # no_improvement_count = 0
             polyak_enabled       = True
