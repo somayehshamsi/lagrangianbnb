@@ -1,4 +1,4 @@
-# import heapq
+import heapq
 # import random
 import networkx as nx
 from lagrangianrelaxation import LagrangianMST
@@ -625,7 +625,7 @@ class MSTNode(Node):
             branching_scores.sort(key=lambda x: x[1], reverse=True)
 
             return [branching_scores[0][0]] if branching_scores else None
-        
+
 
         
         elif self.branching_rule == "random_fractional":
@@ -1129,11 +1129,9 @@ class MSTNode(Node):
             # Strong branching only on the most fractional unhistoried edges
             if shor_primal_solution is not None:
                 unhistoried.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
-                reliable_candidates.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
 
             else:
                 unhistoried.sort(key=lambda e: abs(self.get_fractional_value(e) - 0.5))
-                reliable_candidates.sort(key=lambda e: abs(self.get_fractional_value(e) - 0.5))
 
 
             unhistoried = unhistoried[:max_sb_evals]
@@ -1670,14 +1668,14 @@ class MSTNode(Node):
         u, v = tuple(sorted(edge))
 
         # --- Strong-branching probe: FIX edge ---
-        fixed_lower_bound = self.simulate_branching_bound(edge, fix_edge=True, max_iters=5)
+        fixed_lower_bound = self.simulate_branching_bound(edge, fix_edge=True, max_iters=2)
         fix_infeasible = math.isnan(fixed_lower_bound) or math.isinf(fixed_lower_bound)
 
         if self.verbose and fix_infeasible:
             print(f"Fixed simulation for edge {edge} is infeasible (LB={fixed_lower_bound})")
 
         # --- Strong-branching probe: EXCLUDE edge ---
-        excluded_lower_bound = self.simulate_branching_bound(edge, fix_edge=False, max_iters=5)
+        excluded_lower_bound = self.simulate_branching_bound(edge, fix_edge=False, max_iters=2)
         exclude_infeasible = math.isnan(excluded_lower_bound) or math.isinf(excluded_lower_bound)
 
         if self.verbose and exclude_infeasible:

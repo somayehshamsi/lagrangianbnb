@@ -1121,7 +1121,6 @@ class LagrangianMST:
             # ------------------------------------------------------------------
             for iter_num in range(int(iter_limit)):
                 # 1) MST with current λ, μ
-
                 try:
                     mst_cost, mst_length, mst_edges = self.compute_mst_incremental(prev_weights, prev_mst_edges)
                 except Exception:
