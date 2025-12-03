@@ -230,6 +230,235 @@
 #     main()
 
 #########################################################singlr
+# import random
+# from mstkpinstance import MSTKPInstance  # Import the class from mstkpinstance.py
+# import pickle
+# import gurobipy as gp
+# from gurobipy import GRB
+# import time
+# import pandas as pd
+# import os
+# from datetime import datetime
+# import argparse
+# import logging
+
+# # Configure logging
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# logger = logging.getLogger(__name__)
+
+# # Status mapping for readability (optional)
+# STATUS_MAP = {
+#     GRB.OPTIMAL: "Optimal",
+#     GRB.INFEASIBLE: "Infeasible",
+#     GRB.UNBOUNDED: "Unbounded",
+#     GRB.TIME_LIMIT: "Time Limit",
+#     GRB.INF_OR_UNBD: "Infeasible or Unbounded",
+# }
+
+# def parse_arguments():
+#     parser = argparse.ArgumentParser(prog='Gurobi MST Knapsack Benchmark', usage='%(prog)s [options]')
+#     parser.add_argument(
+#         "--seed",
+#         type=int,
+#         default=42,
+#         help="Random seed (default: 42)"
+#     )
+#     parser.add_argument(
+#         "--num-nodes",
+#         type=int,
+#         default=50,
+#         help="The number of nodes in the graph (default: 50)"
+#     )
+#     parser.add_argument(
+#         "--density",
+#         type=float,
+#         default=1,
+#         help="The density of the graph (default: 0.3)"
+#     )
+#     parser.add_argument(
+#         "--num-instances",
+#         type=int,
+#         default=5,
+#         help="Number of instances to generate and solve (default: 5)"
+#     )
+#     parser.add_argument(
+#         "--output-dir",
+#         type=str,
+#         default="/Users/ssha0224/Desktop",
+#         help="Directory to save results and instances (default: /Users/ssha0224/Desktop)"
+#     )
+#     parser.add_argument(
+#         "--verbose",
+#         action="store_true",
+#         help="Enable verbose output (default: False)"
+#     )
+#     return parser.parse_args()
+
+# # Generate instances (adapted from benchmark_mstkp.py)
+# def generate_instances(num_instances, num_nodes, density, seed, output_dir):
+#     random.seed(seed)
+#     instances = []
+#     for i in range(num_instances):
+#         start_gen = time.time()
+#         instance_seed = random.randint(0, 1000000)  # Random seed per instance for variety
+#         random.seed(instance_seed)
+#         instance = MSTKPInstance(num_nodes, density)  # Will print edges and budget here
+#         gen_time = time.time() - start_gen
+#         instances.append((instance, instance_seed, gen_time))
+#         logger.info(f"Generated instance {i+1}/{num_instances} with seed {instance_seed}")
+    
+#     # Save to pickle
+#     os.makedirs(output_dir, exist_ok=True)
+#     instances_path = os.path.join(output_dir, "instances.pkl")
+#     with open(instances_path, 'wb') as f:
+#         pickle.dump(instances, f)
+#     logger.info(f"Saved instances to {instances_path}")
+#     return instances
+
+# # Always generate new instances
+# def get_instances(args):
+#     logger.info("Generating new instances based on provided seed.")
+#     return generate_instances(args.num_instances, args.num_nodes, args.density, args.seed, args.output_dir)
+
+# # Solve MST + Knapsack using Single Commodity Flow formulation with Gurobi
+# def solve_with_gurobi(instance, seed, verbose=False):
+#     start_solve = time.time()
+#     V = list(range(instance.num_nodes))  # Nodes 0 to n-1
+#     E = [(min(u,v), max(u,v)) for u, v, _, _ in instance.edges]  # Undirected edges
+#     c = {(min(u,v), max(u,v)): w for u, v, w, _ in instance.edges}  # Costs
+#     w_knap = {(min(u,v), max(u,v)): l for u, v, _, l in instance.edges}  # Knapsack weights (lengths)
+#     B = instance.budget
+#     root = 0  # Choose node 0 as root
+
+#     # Directed arcs for flow (both directions)
+#     A = [(i,j) for i in V for j in V if i != j and (min(i,j), max(i,j)) in E]
+
+#     # Gurobi model
+#     model = gp.Model("MST_Knapsack_SingleCommodityFlow")
+#     model.setParam("OutputFlag", 1 if verbose else 0)  # Verbose logging
+#     model.setParam("TimeLimit", 60)  # 1 hour limit
+#     model.setParam("MIPGap", 0.003)  # Small gap for convergence
+
+#     # Variables
+#     x = model.addVars(E, vtype=GRB.BINARY, name="x")  # Edge selection
+#     f = model.addVars(A, vtype=GRB.CONTINUOUS, lb=0, name="f")  # Flow on directed arcs (single commodity)
+
+#     # Objective: Minimize sum c_e * x_e
+#     model.setObjective(gp.quicksum(c[e] * x[e] for e in E), GRB.MINIMIZE)
+
+#     # Constraints
+#     # 1. Exactly |V|-1 edges in the tree
+#     model.addConstr(gp.quicksum(x[e] for e in E) == len(V) - 1, name="tree_size")
+
+#     # 2. Knapsack constraint: sum w_e * x_e <= B
+#     model.addConstr(gp.quicksum(w_knap[e] * x[e] for e in E) <= B, name="knapsack")
+
+#     # 3. Flow conservation (single commodity)
+#     # Root supplies n-1 units
+#     model.addConstr(
+#         gp.quicksum(f[(root, j)] for j in V if (root, j) in A) -
+#         gp.quicksum(f[(j, root)] for j in V if (j, root) in A) == len(V) - 1,
+#         name="flow_supply_root"
+#     )
+#     # Each non-root node demands 1 unit
+#     for i in V:
+#         if i == root:
+#             continue
+#         inflow = gp.quicksum(f[(j, i)] for j in V if (j, i) in A)
+#         outflow = gp.quicksum(f[(i, j)] for j in V if (i, j) in A)
+#         model.addConstr(inflow - outflow == 1, name=f"flow_demand_{i}")
+
+#     # 4. Flow capacity: f_{ij} + f_{ji} <= (n-1) * x_e for each undirected edge e={i,j}
+#     for e in E:
+#         u, v = e
+#         model.addConstr(
+#             f[(u, v)] + f[(v, u)] <= (len(V) - 1) * x[e] if (u, v) in A and (v, u) in A else 0,
+#             name=f"capacity_{u}_{v}"
+#         )
+
+#     # Optimize
+#     start_opt = time.time()
+#     model.optimize()
+#     opt_time = time.time() - start_opt
+
+#     # Collect results with error handling
+#     obj_val = model.objVal if model.status == GRB.OPTIMAL else float('inf')
+#     selected_edges = [e for e in E if x[e].x > 0.99] if model.status == GRB.OPTIMAL else []
+#     nodes_explored = model.NodeCount if hasattr(model, 'NodeCount') else 0
+#     gap = model.MIPGap if hasattr(model, 'MIPGap') else float('inf')
+#     status_str = STATUS_MAP.get(model.status, f"Unknown ({model.status})")  # Use mapping for string
+
+#     solve_time = time.time() - start_solve
+
+#     logger.info(f"Optimal objective: {obj_val}")
+#     logger.info(f"Selected edges: {selected_edges}")
+#     logger.info(f"Nodes explored: {nodes_explored}")
+#     logger.info(f"MIP gap: {gap}")
+#     logger.info(f"Optimization status: {status_str}")
+
+#     result = {
+#         "instance_seed": seed,
+#         "num_nodes": instance.num_nodes,
+#         "density": instance.density,
+#         "budget": instance.budget,
+#         "solve_time": solve_time,
+#         "opt_time": opt_time,
+#         "nodes_explored": nodes_explored,
+#         "best_objective": obj_val,
+#         "mip_gap": gap,
+#         "status": model.status,  # Save as integer (for CSV)
+#         "status_str": status_str,  # Human-readable
+#         "selected_edges": selected_edges
+#     }
+#     return result
+
+# def analyze_gurobi_results(results):
+#     df = pd.DataFrame(results)
+#     summary = df.agg({
+#         "solve_time": ["mean", "std"],
+#         "opt_time": ["mean", "std"],
+#         "nodes_explored": ["mean", "std"],
+#         "best_objective": ["mean", "std"],
+#         "mip_gap": ["mean", "std"]
+#     }).round(2)
+#     return summary
+
+# def main():
+#     args = parse_arguments()
+#     random.seed(args.seed)
+
+#     output_dir = os.path.join(args.output_dir, datetime.now().strftime("%Y%m%d_%H%M%S"))
+#     os.makedirs(output_dir, exist_ok=True)
+
+#     # Get instances (load if exist, else generate)
+#     instances = get_instances(args)
+
+#     results = []
+#     for idx, (instance, instance_seed, gen_time) in enumerate(instances):
+#         logger.info(f"\nSolving instance {idx+1}/{len(instances)} with seed {instance_seed}")
+#         result = solve_with_gurobi(instance, instance_seed, verbose=args.verbose)
+#         result["gen_time"] = gen_time
+#         result["total_time"] = result["gen_time"] + result["solve_time"]
+#         results.append(result)
+
+#     # Save results
+#     final_path = os.path.join(output_dir, "gurobi_results.csv")
+#     df = pd.DataFrame(results)
+#     df.to_csv(final_path, index=False)
+#     logger.info(f"Saved Gurobi results to {final_path}")
+
+#     # Analyze results
+#     summary = analyze_gurobi_results(results)
+#     summary_path = os.path.join(output_dir, "gurobi_summary.csv")
+#     summary.to_csv(summary_path)
+#     logger.info(f"Saved Gurobi summary statistics to {summary_path}")
+#     print("\nGurobi Summary Statistics:")
+#     print(summary)
+
+# if __name__ == "__main__":
+#     main()
+
+#######################################################################
 import random
 from mstkpinstance import MSTKPInstance  # Import the class from mstkpinstance.py
 import pickle
@@ -243,7 +472,8 @@ import argparse
 import logging
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Status mapping for readability (optional)
@@ -253,10 +483,15 @@ STATUS_MAP = {
     GRB.UNBOUNDED: "Unbounded",
     GRB.TIME_LIMIT: "Time Limit",
     GRB.INF_OR_UNBD: "Infeasible or Unbounded",
+    GRB.INTERRUPTED: "Interrupted (user time limit)",  # for callback terminate()
 }
 
+
 def parse_arguments():
-    parser = argparse.ArgumentParser(prog='Gurobi MST Knapsack Benchmark', usage='%(prog)s [options]')
+    parser = argparse.ArgumentParser(
+        prog='Gurobi MST Knapsack Benchmark',
+        usage='%(prog)s [options]'
+    )
     parser.add_argument(
         "--seed",
         type=int,
@@ -272,8 +507,8 @@ def parse_arguments():
     parser.add_argument(
         "--density",
         type=float,
-        default=1,
-        help="The density of the graph (default: 0.3)"
+        default=1.0,
+        help="The density of the graph (default: 1.0)"
     )
     parser.add_argument(
         "--num-instances",
@@ -288,11 +523,18 @@ def parse_arguments():
         help="Directory to save results and instances (default: /Users/ssha0224/Desktop)"
     )
     parser.add_argument(
+        "--time-limit",
+        type=float,
+        default=1800.0,
+        help="Wall-clock time limit per instance in seconds (default: 60)"
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
-        help="Enable verbose output (default: False)"
+        help="Enable verbose Gurobi output (default: False)"
     )
     return parser.parse_args()
+
 
 # Generate instances (adapted from benchmark_mstkp.py)
 def generate_instances(num_instances, num_nodes, density, seed, output_dir):
@@ -300,14 +542,14 @@ def generate_instances(num_instances, num_nodes, density, seed, output_dir):
     instances = []
     for i in range(num_instances):
         start_gen = time.time()
-        instance_seed = random.randint(0, 1000000)  # Random seed per instance for variety
+        instance_seed = random.randint(0, 1000000)  # Random seed per instance
         random.seed(instance_seed)
-        instance = MSTKPInstance(num_nodes, density)  # Will print edges and budget here
+        instance = MSTKPInstance(num_nodes, density)
         gen_time = time.time() - start_gen
         instances.append((instance, instance_seed, gen_time))
         logger.info(f"Generated instance {i+1}/{num_instances} with seed {instance_seed}")
-    
-    # Save to pickle
+
+    # Save to pickle (optional, but useful if you want to reuse instances)
     os.makedirs(output_dir, exist_ok=True)
     instances_path = os.path.join(output_dir, "instances.pkl")
     with open(instances_path, 'wb') as f:
@@ -315,45 +557,85 @@ def generate_instances(num_instances, num_nodes, density, seed, output_dir):
     logger.info(f"Saved instances to {instances_path}")
     return instances
 
-# Always generate new instances
+
+# Always generate new instances for this script
 def get_instances(args):
     logger.info("Generating new instances based on provided seed.")
-    return generate_instances(args.num_instances, args.num_nodes, args.density, args.seed, args.output_dir)
+    return generate_instances(args.num_instances, args.num_nodes,
+                              args.density, args.seed, args.output_dir)
 
-# Solve MST + Knapsack using Single Commodity Flow formulation with Gurobi
-def solve_with_gurobi(instance, seed, verbose=False):
-    start_solve = time.time()
-    V = list(range(instance.num_nodes))  # Nodes 0 to n-1
-    E = [(min(u,v), max(u,v)) for u, v, _, _ in instance.edges]  # Undirected edges
-    c = {(min(u,v), max(u,v)): w for u, v, w, _ in instance.edges}  # Costs
-    w_knap = {(min(u,v), max(u,v)): l for u, v, _, l in instance.edges}  # Knapsack weights (lengths)
+
+# === Callback to enforce global wall-clock limit on the whole solve ===
+def global_time_callback(model, where):
+    """
+    Gurobi callback: terminate when wall-clock from solver start
+    exceeds model._time_limit_s (set before optimize()).
+    """
+    if where in (GRB.Callback.MIP, GRB.Callback.MIPNODE, GRB.Callback.SIMPLEX):
+        now = time.time()
+        elapsed = now - model._start_total
+        if elapsed >= model._time_limit_s:
+            model.terminate()  # status will be GRB.INTERRUPTED
+
+
+def solve_with_gurobi(instance, seed, time_limit_s, verbose=False):
+    """
+    Solve one MSTKP instance with Gurobi, enforcing a *global* wall-clock
+    time limit `time_limit_s` on the whole process (model build + optimize),
+    similar to how your own solver enforces its time limit.
+    """
+    start_total = time.time()
+
+    # Build basic data
+    V = list(range(instance.num_nodes))  # 0..n-1
+    E = [(min(u, v), max(u, v)) for u, v, _, _ in instance.edges]
+    c = {(min(u, v), max(u, v)): w for u, v, w, _ in instance.edges}
+    w_knap = {(min(u, v), max(u, v)): l for u, v, _, l in instance.edges}
     B = instance.budget
-    root = 0  # Choose node 0 as root
+    root = 0
 
-    # Directed arcs for flow (both directions)
-    A = [(i,j) for i in V for j in V if i != j and (min(i,j), max(i,j)) in E]
+    # Directed arcs for flow
+    A = [(i, j) for i in V for j in V if i != j and (min(i, j), max(i, j)) in E]
 
-    # Gurobi model
+    # If we've already exceeded the budget before building the model
+    if time.time() - start_total >= time_limit_s:
+        total_time = time.time() - start_total
+        logger.warning("Time limit reached before model construction.")
+        return {
+            "instance_seed": seed,
+            "num_nodes": instance.num_nodes,
+            "density": instance.density,
+            "budget": instance.budget,
+            "solve_time": total_time,
+            "opt_time": 0.0,
+            "nodes_explored": 0,
+            "best_objective": float('inf'),
+            "mip_gap": float('inf'),
+            "status": GRB.TIME_LIMIT,
+            "status_str": "Time Limit (before optimize)",
+            "selected_edges": [],
+        }
+
+    # Create model
     model = gp.Model("MST_Knapsack_SingleCommodityFlow")
-    model.setParam("OutputFlag", 1 if verbose else 0)  # Verbose logging
-    model.setParam("TimeLimit", 1800)  # 1 hour limit
-    model.setParam("MIPGap", 0.003)  # Small gap for convergence
+    model.setParam("OutputFlag", 1 if verbose else 0)
+    model.setParam("Threads", 1)           # single-thread for fairness
+    model.setParam("MIPGap", 0.003)
 
     # Variables
-    x = model.addVars(E, vtype=GRB.BINARY, name="x")  # Edge selection
-    f = model.addVars(A, vtype=GRB.CONTINUOUS, lb=0, name="f")  # Flow on directed arcs (single commodity)
+    x = model.addVars(E, vtype=GRB.BINARY, name="x")          # edge selection
+    f = model.addVars(A, vtype=GRB.CONTINUOUS, lb=0.0, name="f")  # flow
 
-    # Objective: Minimize sum c_e * x_e
+    # Objective: minimize sum c_e x_e
     model.setObjective(gp.quicksum(c[e] * x[e] for e in E), GRB.MINIMIZE)
 
-    # Constraints
-    # 1. Exactly |V|-1 edges in the tree
+    # 1. Tree size: |E| = |V| - 1
     model.addConstr(gp.quicksum(x[e] for e in E) == len(V) - 1, name="tree_size")
 
-    # 2. Knapsack constraint: sum w_e * x_e <= B
+    # 2. Knapsack constraint
     model.addConstr(gp.quicksum(w_knap[e] * x[e] for e in E) <= B, name="knapsack")
 
-    # 3. Flow conservation (single commodity)
+    # 3. Flow conservation
     # Root supplies n-1 units
     model.addConstr(
         gp.quicksum(f[(root, j)] for j in V if (root, j) in A) -
@@ -368,30 +650,37 @@ def solve_with_gurobi(instance, seed, verbose=False):
         outflow = gp.quicksum(f[(i, j)] for j in V if (i, j) in A)
         model.addConstr(inflow - outflow == 1, name=f"flow_demand_{i}")
 
-    # 4. Flow capacity: f_{ij} + f_{ji} <= (n-1) * x_e for each undirected edge e={i,j}
+    # 4. Capacity constraints: f_uv + f_vu <= (n-1) x_e
     for e in E:
         u, v = e
-        model.addConstr(
-            f[(u, v)] + f[(v, u)] <= (len(V) - 1) * x[e] if (u, v) in A and (v, u) in A else 0,
-            name=f"capacity_{u}_{v}"
-        )
+        if (u, v) in A and (v, u) in A:
+            model.addConstr(
+                f[(u, v)] + f[(v, u)] <= (len(V) - 1) * x[e],
+                name=f"capacity_{u}_{v}"
+            )
 
-    # Optimize
+    # === GLOBAL WALL-CLOCK LIMIT via callback ===
+    model._start_total = start_total
+    model._time_limit_s = time_limit_s
+
     start_opt = time.time()
-    model.optimize()
+    model.optimize(global_time_callback)
     opt_time = time.time() - start_opt
+    total_time = time.time() - start_total
 
-    # Collect results with error handling
-    obj_val = model.objVal if model.status == GRB.OPTIMAL else float('inf')
-    selected_edges = [e for e in E if x[e].x > 0.99] if model.status == GRB.OPTIMAL else []
-    nodes_explored = model.NodeCount if hasattr(model, 'NodeCount') else 0
-    gap = model.MIPGap if hasattr(model, 'MIPGap') else float('inf')
-    status_str = STATUS_MAP.get(model.status, f"Unknown ({model.status})")  # Use mapping for string
+    # Collect results
+    if model.status == GRB.OPTIMAL:
+        obj_val = model.objVal
+        selected_edges = [e for e in E if x[e].x > 0.99]
+    else:
+        obj_val = float('inf')
+        selected_edges = []
 
-    solve_time = time.time() - start_solve
+    nodes_explored = model.NodeCount if hasattr(model, "NodeCount") else 0
+    gap = model.MIPGap if hasattr(model, "MIPGap") else float('inf')
+    status_str = STATUS_MAP.get(model.status, f"Unknown ({model.status})")
 
     logger.info(f"Optimal objective: {obj_val}")
-    logger.info(f"Selected edges: {selected_edges}")
     logger.info(f"Nodes explored: {nodes_explored}")
     logger.info(f"MIP gap: {gap}")
     logger.info(f"Optimization status: {status_str}")
@@ -401,16 +690,21 @@ def solve_with_gurobi(instance, seed, verbose=False):
         "num_nodes": instance.num_nodes,
         "density": instance.density,
         "budget": instance.budget,
-        "solve_time": solve_time,
+
+        # Full process time (what you compare to your solver's total_time)
+        "solve_time": total_time,
+        # Time inside model.optimize() only (diagnostic)
         "opt_time": opt_time,
+
         "nodes_explored": nodes_explored,
         "best_objective": obj_val,
         "mip_gap": gap,
-        "status": model.status,  # Save as integer (for CSV)
-        "status_str": status_str,  # Human-readable
-        "selected_edges": selected_edges
+        "status": model.status,
+        "status_str": status_str,
+        "selected_edges": selected_edges,
     }
     return result
+
 
 def analyze_gurobi_results(results):
     df = pd.DataFrame(results)
@@ -419,41 +713,98 @@ def analyze_gurobi_results(results):
         "opt_time": ["mean", "std"],
         "nodes_explored": ["mean", "std"],
         "best_objective": ["mean", "std"],
-        "mip_gap": ["mean", "std"]
+        "mip_gap": ["mean", "std"],
     }).round(2)
     return summary
+
+
+def summarize_for_paper(results, time_limit):
+    """
+    Build a one-row summary with:
+    Solved (%), PAR10, Time (all), Time (solved), Nodes (solved)
+    analogous to your MSTKP tables.
+    """
+    df = pd.DataFrame(results)
+
+    # 1) solved flag: only exact optimal solutions
+    df["solved"] = df["status"].isin([GRB.OPTIMAL])
+
+    # 2) capped_time and PAR10, same logic as your solver:
+    #    capped_time = min(total_time, limit)
+    #    par10 = total_time if solved else 10*limit
+    df["capped_time"] = df["solve_time"].clip(upper=time_limit)
+    df["par10"] = df["solve_time"].where(df["solved"],
+                                         10.0 * time_limit)
+
+    # 3) nodes only for solved instances
+    df["nodes_solved"] = df["nodes_explored"].where(df["solved"])
+
+    # 4) Aggregates
+    solved_pct = 100.0 * df["solved"].mean()
+    par10_mean = df["par10"].mean()
+    time_all_mean = df["solve_time"].mean()
+    time_solved_mean = df.loc[df["solved"], "solve_time"].mean()
+    nodes_solved_mean = df["nodes_solved"].mean()
+
+    summary_row = pd.DataFrame([{
+        "solved_pct": solved_pct,
+        "par10": par10_mean,
+        "time_all": time_all_mean,
+        "time_solved": time_solved_mean,
+        "nodes_solved": nodes_solved_mean,
+    }])
+
+    return summary_row.round(2)
+
 
 def main():
     args = parse_arguments()
     random.seed(args.seed)
 
-    output_dir = os.path.join(args.output_dir, datetime.now().strftime("%Y%m%d_%H%M%S"))
+    output_dir = os.path.join(args.output_dir,
+                              datetime.now().strftime("%Y%m%d_%H%M%S"))
     os.makedirs(output_dir, exist_ok=True)
 
-    # Get instances (load if exist, else generate)
+    # Generate instances
     instances = get_instances(args)
 
     results = []
     for idx, (instance, instance_seed, gen_time) in enumerate(instances):
         logger.info(f"\nSolving instance {idx+1}/{len(instances)} with seed {instance_seed}")
-        result = solve_with_gurobi(instance, instance_seed, verbose=args.verbose)
+        result = solve_with_gurobi(
+            instance,
+            instance_seed,
+            time_limit_s=args.time_limit,
+            verbose=args.verbose
+        )
         result["gen_time"] = gen_time
+        # If you ever want “generation + solve”:
         result["total_time"] = result["gen_time"] + result["solve_time"]
         results.append(result)
 
-    # Save results
+    # Save per-instance results
     final_path = os.path.join(output_dir, "gurobi_results.csv")
     df = pd.DataFrame(results)
     df.to_csv(final_path, index=False)
     logger.info(f"Saved Gurobi results to {final_path}")
 
-    # Analyze results
+    # Basic debug summary
     summary = analyze_gurobi_results(results)
     summary_path = os.path.join(output_dir, "gurobi_summary.csv")
     summary.to_csv(summary_path)
     logger.info(f"Saved Gurobi summary statistics to {summary_path}")
+
+    # Paper-style single-row summary (for comparison with your solver)
+    paper_summary = summarize_for_paper(results, args.time_limit)
+    paper_summary_path = os.path.join(output_dir, "gurobi_summary_for_paper.csv")
+    paper_summary.to_csv(paper_summary_path, index=False)
+    logger.info(f"Saved paper-style Gurobi summary to {paper_summary_path}")
+
     print("\nGurobi Summary Statistics:")
     print(summary)
+    print("\nPaper-style summary:")
+    print(paper_summary)
+
 
 if __name__ == "__main__":
     main()
