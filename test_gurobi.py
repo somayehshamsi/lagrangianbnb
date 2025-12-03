@@ -761,9 +761,10 @@ def main():
     args = parse_arguments()
     random.seed(args.seed)
 
-    output_dir = os.path.join(args.output_dir,
-                              datetime.now().strftime("%Y%m%d_%H%M%S"))
-    os.makedirs(output_dir, exist_ok=True)
+    # one folder per script seed (the one you pass in --seed)
+    run_dir = os.path.join(args.output_dir, f"seed_{args.seed}")
+    os.makedirs(run_dir, exist_ok=True)
+
 
     # Generate instances
     instances = get_instances(args)
@@ -783,20 +784,20 @@ def main():
         results.append(result)
 
     # Save per-instance results
-    final_path = os.path.join(output_dir, "gurobi_results.csv")
+    final_path = os.path.join(run_dir, "gurobi_results.csv")
     df = pd.DataFrame(results)
     df.to_csv(final_path, index=False)
     logger.info(f"Saved Gurobi results to {final_path}")
 
     # Basic debug summary
     summary = analyze_gurobi_results(results)
-    summary_path = os.path.join(output_dir, "gurobi_summary.csv")
+    summary_path = os.path.join(run_dir, "gurobi_summary.csv")
     summary.to_csv(summary_path)
     logger.info(f"Saved Gurobi summary statistics to {summary_path}")
 
     # Paper-style single-row summary (for comparison with your solver)
     paper_summary = summarize_for_paper(results, args.time_limit)
-    paper_summary_path = os.path.join(output_dir, "gurobi_summary_for_paper.csv")
+    paper_summary_path = os.path.join(run_dir, "gurobi_summary_for_paper.csv")
     paper_summary.to_csv(paper_summary_path, index=False)
     logger.info(f"Saved paper-style Gurobi summary to {paper_summary_path}")
 
