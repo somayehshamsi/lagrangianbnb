@@ -398,7 +398,7 @@ def main():
             "use_bisection": False,
             "use_2opt": False,
             "use_shooting": False,
-            "cover_cuts": True,
+            "cover_cuts": False,
             "inherit-step-size": False,
             "inherit_lambda": True
         }
@@ -408,7 +408,7 @@ def main():
             "use_bisection": False,
             "use_2opt": False,
             "use_shooting": False,
-            "cover_cuts": True,
+            "cover_cuts": False,
             "inherit-step-size": False,
             "inherit_lambda": True
         }
@@ -419,52 +419,52 @@ def main():
             "use_bisection": False,
             "use_2opt": False,
             "use_shooting": False,
-            "cover_cuts": True,
+            "cover_cuts": False,
             "inherit-step-size": False,
             "inherit_lambda": True
         }
 
-        ,
-        {
-            "branching_rule": "random_mst",
-            "use_bisection": False,
-            "use_2opt": False,
-            "use_shooting": False,
-            "cover_cuts": True,
-            "inherit-step-size": False,
-            "inherit_lambda": True
-        }
+        # ,
+        # {
+        #     "branching_rule": "random_mst",
+        #     "use_bisection": False,
+        #     "use_2opt": False,
+        #     "use_shooting": False,
+        #     "cover_cuts": True,
+        #     "inherit-step-size": False,
+        #     "inherit_lambda": True
+        # }
         , 
         {
             "branching_rule": "random_fractional",
             "use_bisection": False,
             "use_2opt": False,
             "use_shooting": False,
-            "cover_cuts": True,
+            "cover_cuts": False,
             "inherit-step-size": False,
             "inherit_lambda": True
         }
-        ,
-        {
-            "branching_rule": "sb_fractional",
-            "use_bisection": False,
-            "use_2opt": False,
-            "use_shooting": False,
-            "cover_cuts": True,
-            "inherit-step-size": False,
-            "inherit_lambda": True
-        }
-        ,
+        # ,
+        # {
+        #     "branching_rule": "sb_fractional",
+        #     "use_bisection": False,
+        #     "use_2opt": False,
+        #     "use_shooting": False,
+        #     "cover_cuts": True,
+        #     "inherit-step-size": False,
+        #     "inherit_lambda": True
+        # }
+        # ,
 
-        {
-            "branching_rule": "strong_branching",
-            "use_bisection": False,
-            "use_2opt": False,
-            "use_shooting": False,
-            "cover_cuts": True,
-            "inherit-step-size": False,
-            "inherit_lambda": True
-        }
+        # {
+        #     "branching_rule": "strong_branching",
+        #     "use_bisection": False,
+        #     "use_2opt": False,
+        #     "use_shooting": False,
+        #     "cover_cuts": True,
+        #     "inherit-step-size": False,
+        #     "inherit_lambda": True
+        # }
         # ,
         
 
