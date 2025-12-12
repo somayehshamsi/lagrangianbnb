@@ -417,10 +417,7 @@ class MSTNode(Node):
 
         return fixed_child, excluded_child
 
-
-
-
-    
+  
 
     def is_feasible(self):
         real_weight, real_length = self.lagrangian_solver.compute_real_weight_length()
