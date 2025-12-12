@@ -489,7 +489,6 @@ class LagrangianMST:
             dominated = any(dset <= cset and drhs <= rhs for dset, drhs in kept)
             if not dominated:
                 kept.append((cset, rhs))
-        print("ff", kept)
         return kept[:MAX_RETURN]
 
 
@@ -926,8 +925,8 @@ class LagrangianMST:
             eps              = 1e-12
 
             # Depth-based behaviour
-            max_cut_depth = getattr(self, "max_cut_depth", 30)                 # where we ADD cuts
-            max_mu_depth  = getattr(self, "max_mu_depth", 50)      # where we UPDATE μ / use cuts in dual
+            max_cut_depth = getattr(self, "max_cut_depth", 3)                 # where we ADD cuts
+            max_mu_depth  = getattr(self, "max_mu_depth", 5)      # where we UPDATE μ / use cuts in dual
             is_root       = (depth == 0)
 
             # Node-level separation parameters
@@ -948,8 +947,8 @@ class LagrangianMST:
                 self.best_cut_multipliers_for_best_bound = {}  # μ at best LB
 
             # Which behaviour at this node?
-            cutting_active_here = self.use_cover_cuts and (depth <= max_cut_depth)   # can ADD cuts
-            mu_dynamic_here     = self.use_cover_cuts and (depth <= max_mu_depth)    # can UPDATE μ / use in dual
+            cutting_active_here = self.use_cover_cuts and ((depth <= max_cut_depth) ) # can ADD cuts
+            mu_dynamic_here     = self.use_cover_cuts and ((depth <= max_mu_depth))   # can UPDATE μ / use in dual
             cuts_present_here   = self.use_cover_cuts and bool(self.best_cuts)
 
             # IMPORTANT: if cuts are present but this node is *not* allowed to update μ,
@@ -1387,7 +1386,6 @@ class LagrangianMST:
                 if mu_dynamic_here and len(cut_subgradients) > 0:
                     for i, g in enumerate(cut_subgradients):
                         delta = gamma_mu * alpha * g
-                        # print("ff",g)
                         if mu_increment_cap is not None:
                             if delta > mu_increment_cap:
                                 delta = mu_increment_cap
