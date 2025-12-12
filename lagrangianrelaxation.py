@@ -1190,7 +1190,7 @@ class LagrangianMST:
             mst_mask = self._mst_mask
 
             # Decide iteration limit for this node:
-            if is_root and cutting_active_here:
+            if is_root:
                 iter_limit = root_max_iter
             else:
                 iter_limit = max_iter
@@ -1198,7 +1198,7 @@ class LagrangianMST:
             # ------------------------------------------------------------------
             # 5) Subgradient iterations
             # ------------------------------------------------------------------
-            for iter_num in range(int(max_iter)):
+            for iter_num in range(int(iter_limit)):
                 # 1) MST with current λ, μ
                 try:
                     mst_cost, mst_length, mst_edges = self.compute_mst_incremental(prev_weights, prev_mst_edges)
