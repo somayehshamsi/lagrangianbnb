@@ -64,7 +64,7 @@ class LagrangianMST:
 
 
     def __init__(self, edges, num_nodes, budget, fixed_edges=None, excluded_edges=None,
-                 initial_lambda=0.4, step_size=0.001, max_iter=10, 
+                 initial_lambda=0.11, step_size=0.001, max_iter=10, 
                  use_cover_cuts=False, cut_frequency=5, use_bisection=False,
                  verbose=False, shared_graph=None):
         start_time = time()
@@ -181,7 +181,7 @@ class LagrangianMST:
         if initial_lambda is not None:
             self.lmbda = float(initial_lambda)
         else:
-            self.lmbda = getattr(self, "lmbda", 0.4)
+            self.lmbda = getattr(self, "lmbda", 0.11)
 
         if step_size is not None:
             self.step_size = float(step_size)
@@ -232,264 +232,660 @@ class LagrangianMST:
     
 
 
+    # def generate_cover_cuts(self, mst_edges):
+    #     """
+    #     Fast + strong cover cuts (tightened):
+    #     - Residualization: A, B', r' (clamped)
+    #     - Seed minimal cover from T^λ ∩ A; certificate shrinking (optimistic U), lazy DSU confirm
+    #     - Micro-seed from top-L heaviest admissible edges (tiny diversity)
+    #     - τ-lifting (remaining-based, safe, one pass)
+    #     - Strict effective-RHS pruning and current-violation checks
+    #     - Dedup with dominance & subset-dominance
+    #     """
+    #     if not mst_edges:
+    #         return []
+
+    #     EPS = 1e-12
+    #     L_MICRO = 3
+    #     MAX_RETURN = 10
+
+    #     # --- normalize edges ---
+    #     def norm(e):
+    #         u, v = e
+    #         return (u, v) if u <= v else (v, u)
+    #     mst_norm = [norm(e) for e in mst_edges]
+    #     mst_set = set(mst_norm)  # for fast lhs checks
+
+    #     # --- accessors / data ---
+    #     edge_attr = self.edge_attributes           # edge -> (w, ℓ)
+    #     def get_len(e): return edge_attr[e][1]
+
+    #     fixed = set(getattr(self, "fixed_edges", set()))
+    #     excluded = set(getattr(self, "excluded_edges", set()))
+    #     budget = self.budget
+
+    #     # Residual data
+    #     L_fix = sum(get_len(e) for e in fixed if e in edge_attr)
+    #     Bp = budget - L_fix
+    #     r_all = self.num_nodes - 1
+    #     r_prime = max(0, r_all - len(fixed))       # clamp
+
+    #     # If residual is degenerate, early out
+    #     if r_prime == 0:
+    #         return []
+
+    #     # Admissible edges
+    #     A = {e for e in getattr(self, "edge_list", []) if e not in fixed and e not in excluded and e in edge_attr}
+    #     if not A:
+    #         return []
+
+    #     # T^λ ∩ A (use provided mst_edges)
+    #     TcapA = [e for e in mst_norm if e in A]
+
+    #     # If residual MST is feasible, nothing to cut
+    #     mst_len = sum(get_len(e) for e in TcapA)
+    #     if mst_len <= Bp + EPS:
+    #         return []
+
+    #     # If the residual budget is negative (fixes already exceed B'), cap behavior:
+    #     # still try to emit a strong (minimal) cover; otherwise return empty to avoid INF artefacts.
+    #     cuts = []
+
+    #     # Pre-sort A for optimistic completion and lifting
+    #     A_sorted = sorted(A, key=lambda e: get_len(e))
+
+    #     def U_of(Sprime):
+    #         """Optimistic completion: sum of k cheapest in A \\ S', where k=r'-|S'|."""
+    #         k = r_prime - len(Sprime)
+    #         if k <= 0:
+    #             return 0.0
+    #         Sprime_set = Sprime if isinstance(Sprime, set) else set(Sprime)
+    #         total = 0.0; taken = 0
+    #         for e in A_sorted:
+    #             if e in Sprime_set:
+    #                 continue
+    #             total += get_len(e); taken += 1
+    #             if taken == k:
+    #                 break
+    #         return total if taken == k else float('inf')
+
+    #     def completion_mst_cost(Ssub):
+    #         """Exact completion via Kruskal on contracted graph: DSU scan."""
+    #         parent, rank = {}, {}
+    #         def find(x):
+    #             px = parent.get(x, x)
+    #             if px != x:
+    #                 parent[x] = find(px)
+    #             else:
+    #                 parent.setdefault(x, x)
+    #             return parent[x]
+    #         def union(x, y):
+    #             rx, ry = find(x), find(y)
+    #             if rx == ry: return False
+    #             rxr, ryr = rank.get(rx,0), rank.get(ry,0)
+    #             if rxr < ryr: parent[rx] = ry
+    #             elif rxr > ryr: parent[ry] = rx
+    #             else: parent[ry] = rx; rank[rx] = rxr + 1
+    #             return True
+
+    #         # nodes
+    #         if hasattr(self, "graph") and hasattr(self.graph, "nodes"):
+    #             nodes = list(self.graph.nodes)
+    #         else:
+    #             nodes = list({n for e in A for n in e})
+    #         for n in nodes:
+    #             parent[n] = n; rank[n] = 0
+
+    #         # contract fixed ∪ Ssub
+    #         contracted = set(fixed) | set(Ssub)
+    #         for (u, v) in contracted:
+    #             union(u, v)
+
+    #         k_needed = r_prime - len(Ssub)
+    #         if k_needed <= 0:
+    #             return 0.0
+
+    #         total = 0.0; taken = 0; Sset = set(Ssub)
+    #         for e in A_sorted:
+    #             if e in Sset: continue
+    #             u, v = e
+    #             if union(u, v):
+    #                 total += get_len(e); taken += 1
+    #                 if taken == k_needed: break
+    #         return total if taken == k_needed else float('inf')
+
+    #     def build_residual_minimal_cover(desc_edges):
+    #         """Minimal cover on B': add in desc ℓ, then prune shortest while violation remains."""
+    #         S, sL = [], 0.0
+    #         for e in desc_edges:
+    #             if e not in edge_attr:
+    #                 continue
+    #             S.append(e); sL += get_len(e)
+    #             if sL > Bp + EPS:
+    #                 S.sort(key=lambda x: get_len(x))  # increasing
+    #                 k = 0
+    #                 while k < len(S) and (sL - get_len(S[k]) > Bp + EPS):
+    #                     sL -= get_len(S[k]); k += 1
+    #                 if k > 0:
+    #                     S = S[k:]
+    #                 return S, sL
+    #         return None, None
+
+    #     def rhs_eff(cset):
+    #         """Effective RHS after accounting fixed-in edges."""
+    #         return len(cset) - 1 - sum(1 for e in cset if e in fixed)
+
+    #     def is_violated_now(cset):
+    #         """Check current MST violation: lhs > rhs_eff."""
+    #         lhs = sum(1 for e in cset if e in mst_set)
+    #         return lhs > rhs_eff(cset)
+
+    #     def try_shrink_and_add(seed_S, seed_sumL):
+    #         """Shrink from a seed using optimistic certificate; lazily confirm with DSU if margin is thin."""
+    #         if not seed_S or len(seed_S) <= 1:
+    #             return
+    #         S_work = sorted(seed_S, key=lambda e: get_len(e), reverse=True)
+    #         sumL = seed_sumL
+    #         idx = 0
+    #         while idx < len(S_work) and sumL > Bp + EPS:
+    #             sumL -= get_len(S_work[idx]); idx += 1
+    #         Sprime = S_work[idx:]  # first with sumℓ ≤ B'
+
+    #         def margin(Slist):
+    #             return (sum(get_len(e) for e in Slist) + U_of(Slist)) - Bp
+
+    #         if Sprime:
+    #             # strict effective-RHS and current-violation screening
+    #             if rhs_eff(Sprime) <= 0:
+    #                 return
+    #             if margin(Sprime) > 0:
+    #                 # If optimistic margin is big enough, still require current violation
+    #                 if is_violated_now(Sprime):
+    #                     cuts.append((set(Sprime), len(Sprime) - 1))
+    #             else:
+    #                 # thin margin: do exact completion
+    #                 exact_total = sum(get_len(e) for e in Sprime) + completion_mst_cost(Sprime)
+    #                 if exact_total > Bp + EPS and is_violated_now(Sprime):
+    #                     cuts.append((set(Sprime), len(Sprime) - 1))
+
+    #     # --- (1) primary seed from T^λ ∩ A ---
+    #     T_desc = sorted(TcapA, key=lambda e: get_len(e), reverse=True)
+    #     S_seed, sumL_seed = build_residual_minimal_cover(T_desc)
+    #     if not S_seed:
+    #         return []
+    #     S_seed = list(S_seed)
+
+    #     # Add primary seed only if effective and violated now
+    #     if rhs_eff(S_seed) > 0 and is_violated_now(S_seed):
+    #         cuts.append((set(S_seed), len(S_seed) - 1))
+    #     # and try to shrink/confirm
+    #     try_shrink_and_add(S_seed, sumL_seed)
+
+    #         # --- (1c) Lifting on S_seed (sequence-independent, safe) ---
+    #     if S_seed and rhs_eff(S_seed) > 0 and is_violated_now(S_seed):
+    #         S_base = set(S_seed)
+    #         # L_max = max length in S_seed
+    #         L_max = max(get_len(e) for e in S_base)
+
+    #         # Add all admissible edges with ℓ(f) ≥ L_max
+    #         lift_add = {
+    #             f for f in A
+    #             if f not in S_base and get_len(f) + EPS >= L_max
+    #         }
+
+    #         if lift_add:
+    #             S_lift = S_base | lift_add
+    #             # Keep RHS = |S_seed| - 1 (original minimal cover size)
+    #             if rhs_eff(S_lift) > 0 and is_violated_now(S_lift):
+    #                 cuts.append((S_lift, len(S_seed) - 1))
+
+    #     # --- (1b) micro-seed: top-L heaviest admissible edges ---
+    #     if L_MICRO > 0 and len(A) > 0:
+    #         heavyA = sorted(A, key=lambda e: get_len(e), reverse=True)[:L_MICRO]
+    #         S2, sumL2 = build_residual_minimal_cover(heavyA)
+    #         if S2:
+    #             S2set = set(S2)
+    #             # require effectiveness and current violation; avoid duplicate of S_seed
+    #             if rhs_eff(S2set) > 0 and S2set != set(S_seed) and is_violated_now(S2set):
+    #                 cuts.append((S2set, len(S2) - 1))
+    #                 try_shrink_and_add(S2, sumL2)
+    #                 # --- (1b-lift) Lifting on S2 (same rule as S_seed) ---
+    #                 L_max2 = max(get_len(e) for e in S2set)
+
+    #                 lift_add2 = {
+    #                     f for f in A
+    #                     if f not in S2set and get_len(f) + EPS >= L_max2
+    #                 }
+
+    #                 if lift_add2:
+    #                     S2_lift = S2set | lift_add2
+    #                     # RHS stays |S2| - 1 (based on the original minimal cover)
+    #                     if rhs_eff(S2_lift) > 0 and is_violated_now(S2_lift):
+    #                         cuts.append((S2_lift, len(S2) - 1))
+
+       
+    #     # --- dedup & dominance-aware selection ---
+    #     uniq = {}
+    #     for cset, rhs in cuts:
+    #         key = tuple(sorted(cset))  # stable order for hashing
+    #         best = uniq.get(key)
+    #         # if same support appears with different rhs, keep the *stronger* (smaller rhs),
+    #         # and if rhs ties, keep the one with smaller support just for consistency
+    #         if best is None or rhs < best[1] or (rhs == best[1] and len(cset) < len(best[0])):
+    #             uniq[key] = (cset, rhs)
+
+    #     final = list(uniq.values())
+    #     # process stronger cuts first: smaller rhs, then smaller |S|
+    #     final.sort(key=lambda t: (t[1], len(t[0])))
+
+    #     kept = []
+    #     for cset, rhs in final:
+    #         if rhs_eff(cset) <= 0:
+    #             continue
+    #         # drop cset if there is ALREADY a stronger cut (dset,drhs) with
+    #         # dset ⊆ cset and drhs ≤ rhs
+    #         dominated = any(dset <= cset and drhs <= rhs for dset, drhs in kept)
+    #         if not dominated:
+    #             kept.append((cset, rhs))
+    #     return kept[:MAX_RETURN]
     def generate_cover_cuts(self, mst_edges):
         """
-        Fast + strong cover cuts (tightened):
-        - Residualization: A, B', r' (clamped)
-        - Seed minimal cover from T^λ ∩ A; certificate shrinking (optimistic U), lazy DSU confirm
-        - Micro-seed from top-L heaviest admissible edges (tiny diversity)
-        - τ-lifting (remaining-based, safe, one pass)
-        - Strict effective-RHS pruning and current-violation checks
-        - Dedup with dominance & subset-dominance
+        Cover-cut generation consistent with the LaTeX logic, with corner-case safety:
+
+        Setup:
+        F_+ fixed, F_- excluded.
+        A := E \ (F_+ ∪ F_-)
+        B' := B - sum_{e in F_+} ℓ(e)
+
+        (1) Seed residual-minimal cover on B':
+        From T^λ ∩ A, sort by nonincreasing ℓ and add until sumℓ > B'.
+        Then delete the currently shortest edge while preserving violation to obtain residual-minimal cover S:
+            sumℓ(S) > B' and sumℓ(S \ {e}) <= B' for all e in S
+        Add classical cover cut: sum_{e in S} x_e <= |S|-1  (only if it separates current mst_edges).
+
+        (2) Connectivity-aware shrinking:
+        From S, delete the longest edges until sumℓ <= B' to obtain first S'.
+        Define r'(S') := κ(F_+ ∪ S') - 1  (components after contracting F_+ ∪ S')
+        Define optimistic completion bound:
+            U(S') = sum of r'(S') cheapest ℓ in A \ S'
+        Residual certificate:
+            if sumℓ(S') + U(S') > B' then any spanning tree containing S' (and F_+) exceeds B
+        From S', keep deleting the longest edge while the certificate holds; stop when inclusion-minimal => S*
+        Add cut on S*.
+
+        Safety additions:
+            - Never certify from INF (insufficient edges/connectivity)
+            - If optimistic cert fails, try exact completion (Kruskal on contracted graph):
+                if sumℓ(S') + completion_cost(S') > B'  then S' is infeasible -> allow shrinking with exact-cert.
+
+        Lifting cover cuts (LaTeX §Lifting):
+        Only for residual-minimal covers from (1):
+            Let L_max = max_{e in S} ℓ(e)
+            Add all f∉S with ℓ(f) >= L_max with unit coefficient; RHS remains |S|-1.
+
+        Notes:
+        - All certificate logic uses components-based r'(S) = κ(F_+ ∪ S) - 1
+        - We skip generating cuts from sets where (F_+ ∪ S) contains a cycle (cannot be in any tree; usually useless).
+        - We only *add* cuts that separate the current mst_edges (separation filter).
         """
         if not mst_edges:
             return []
 
         EPS = 1e-12
         L_MICRO = 3
-        CONFIRM_MARGIN = 0.05
         MAX_RETURN = 10
-        LIFT_PREF_Q = 0.5
 
-        # --- normalize edges ---
+        # ---- normalize edges ----
         def norm(e):
             u, v = e
             return (u, v) if u <= v else (v, u)
-        mst_norm = [norm(e) for e in mst_edges]
-        mst_set = set(mst_norm)  # for fast lhs checks
 
-        # --- accessors / data ---
-        edge_attr = self.edge_attributes           # edge -> (w, ℓ)
+        mst_norm = [norm(e) for e in mst_edges]
+        mst_set = set(mst_norm)
+
+        edge_attr = self.edge_attributes  # edge -> (w, ℓ)
         def get_len(e): return edge_attr[e][1]
 
         fixed = set(getattr(self, "fixed_edges", set()))
         excluded = set(getattr(self, "excluded_edges", set()))
         budget = self.budget
 
-        # Residual data
+        # Nodes
+        if hasattr(self, "graph") and hasattr(self.graph, "nodes"):
+            nodes = list(self.graph.nodes)
+        else:
+            all_edges = getattr(self, "edge_list", [])
+            nodes = list({n for (u, v) in all_edges for n in (u, v)})
+
+        # Residual budget B'
         L_fix = sum(get_len(e) for e in fixed if e in edge_attr)
         Bp = budget - L_fix
-        r_all = self.num_nodes - 1
-        r_prime = max(0, r_all - len(fixed))       # clamp
 
-        # If residual is degenerate, early out
+        # r' = |V|-1-|F_+| (degeneracy check only)
+        r_all = self.num_nodes - 1
+        r_prime = max(0, r_all - len(fixed))
         if r_prime == 0:
             return []
 
-        # Admissible edges
-        A = {e for e in getattr(self, "edge_list", []) if e not in fixed and e not in excluded and e in edge_attr}
+        # Admissible edges A = E \ (F_+ ∪ F_-)
+        A = {
+            e for e in getattr(self, "edge_list", [])
+            if e in edge_attr and e not in fixed and e not in excluded
+        }
         if not A:
             return []
 
-        # T^λ ∩ A (use provided mst_edges)
+        # T^λ ∩ A
         TcapA = [e for e in mst_norm if e in A]
 
-        # If residual MST is feasible, nothing to cut
-        mst_len = sum(get_len(e) for e in TcapA)
-        if mst_len <= Bp + EPS:
+        # If current residual MST is feasible, no need to cut
+        if sum(get_len(e) for e in TcapA) <= Bp + EPS:
             return []
 
-        # If the residual budget is negative (fixes already exceed B'), cap behavior:
-        # still try to emit a strong (minimal) cover; otherwise return empty to avoid INF artefacts.
-        cuts = []
-
-        # Pre-sort A for optimistic completion and lifting
+        # Sort admissible edges by nondecreasing length (for U and exact completion)
         A_sorted = sorted(A, key=lambda e: get_len(e))
 
-        def U_of(Sprime):
-            """Optimistic completion: sum of k cheapest in A \\ S', where k=r'-|S'|."""
-            k = r_prime - len(Sprime)
-            if k <= 0:
-                return 0.0
-            Sprime_set = Sprime if isinstance(Sprime, set) else set(Sprime)
-            total = 0.0; taken = 0
-            for e in A_sorted:
-                if e in Sprime_set:
-                    continue
-                total += get_len(e); taken += 1
-                if taken == k:
-                    break
-            return total if taken == k else float('inf')
+        # ---- DSU helpers ----
+        def dsu_init():
+            parent = {n: n for n in nodes}
+            rank = {n: 0 for n in nodes}
 
-        def completion_mst_cost(Ssub):
-            """Exact completion via Kruskal on contracted graph: DSU scan."""
-            parent, rank = {}, {}
             def find(x):
-                px = parent.get(x, x)
-                if px != x:
-                    parent[x] = find(px)
-                else:
-                    parent.setdefault(x, x)
-                return parent[x]
-            def union(x, y):
-                rx, ry = find(x), find(y)
-                if rx == ry: return False
-                rxr, ryr = rank.get(rx,0), rank.get(ry,0)
-                if rxr < ryr: parent[rx] = ry
-                elif rxr > ryr: parent[ry] = rx
-                else: parent[ry] = rx; rank[rx] = rxr + 1
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                return x
+
+            def union(a, b):
+                ra, rb = find(a), find(b)
+                if ra == rb:
+                    return False
+                if rank[ra] < rank[rb]:
+                    ra, rb = rb, ra
+                parent[rb] = ra
+                if rank[ra] == rank[rb]:
+                    rank[ra] += 1
                 return True
 
-            # nodes
-            if hasattr(self, "graph") and hasattr(self.graph, "nodes"):
-                nodes = list(self.graph.nodes)
-            else:
-                nodes = list({n for e in A for n in e})
-            for n in nodes:
-                parent[n] = n; rank[n] = 0
+            return find, union
 
-            # contract fixed ∪ Ssub
-            contracted = set(fixed) | set(Ssub)
-            for (u, v) in contracted:
-                union(u, v)
+        def contract_info(contract_edges):
+            """
+            Returns (components, has_cycle) after contracting contract_edges.
+            """
+            find, union = dsu_init()
+            has_cycle = False
+            for (u, v) in contract_edges:
+                if (u, v) not in edge_attr:
+                    continue
+                if not union(u, v):
+                    has_cycle = True
+            comps = len({find(n) for n in nodes})
+            return comps, has_cycle
 
-            k_needed = r_prime - len(Ssub)
-            if k_needed <= 0:
+        def k_needed_after_contract(contract_edges):
+            comps, _ = contract_info(contract_edges)
+            return comps - 1
+
+        def U_of(S):
+            """
+            Optimistic completion bound:
+            k = κ(F_+ ∪ S) - 1
+            U(S) = sum of k cheapest lengths in A \ S
+            """
+            Sset = S if isinstance(S, set) else set(S)
+            k = k_needed_after_contract(fixed | Sset)
+            if k <= 0:
+                return 0.0
+            total = 0.0
+            taken = 0
+            for e in A_sorted:
+                if e in Sset:
+                    continue
+                total += get_len(e)
+                taken += 1
+                if taken == k:
+                    break
+            return total if taken == k else float("inf")
+
+        def completion_mst_cost(S):
+            """
+            Exact completion via Kruskal:
+            - contract fixed ∪ S
+            - add cheapest edges from A \ S that connect remaining components
+            Returns inf if cannot complete.
+            """
+            Sset = S if isinstance(S, set) else set(S)
+
+            find, union = dsu_init()
+            has_cycle = False
+            for (u, v) in (fixed | Sset):
+                if (u, v) not in edge_attr:
+                    continue
+                if not union(u, v):
+                    has_cycle = True  # cycle in contracted set; means "cannot be in any tree"
+            if has_cycle:
+                return float("inf")
+
+            comps = len({find(n) for n in nodes})
+            k = comps - 1
+            if k <= 0:
                 return 0.0
 
-            total = 0.0; taken = 0; Sset = set(Ssub)
+            total = 0.0
+            taken = 0
             for e in A_sorted:
-                if e in Sset: continue
+                if e in Sset:
+                    continue
                 u, v = e
                 if union(u, v):
-                    total += get_len(e); taken += 1
-                    if taken == k_needed: break
-            return total if taken == k_needed else float('inf')
+                    total += get_len(e)
+                    taken += 1
+                    if taken == k:
+                        break
+            return total if taken == k else float("inf")
 
+        # ---- Residual-minimal cover construction (Step 1) ----
         def build_residual_minimal_cover(desc_edges):
-            """Minimal cover on B': add in desc ℓ, then prune shortest while violation remains."""
-            S, sL = [], 0.0
+            """
+            Build residual-minimal cover S:
+            - add edges in nonincreasing ℓ until sumℓ > B'
+            - then delete currently-shortest edges while violation remains
+            Returns (S_list, sumℓ(S)).
+            """
+            S = []
+            sL = 0.0
             for e in desc_edges:
                 if e not in edge_attr:
                     continue
-                S.append(e); sL += get_len(e)
+                S.append(e)
+                sL += get_len(e)
                 if sL > Bp + EPS:
                     S.sort(key=lambda x: get_len(x))  # increasing
-                    k = 0
-                    while k < len(S) and (sL - get_len(S[k]) > Bp + EPS):
-                        sL -= get_len(S[k]); k += 1
-                    if k > 0:
-                        S = S[k:]
+                    i = 0
+                    while i < len(S) and (sL - get_len(S[i]) > Bp + EPS):
+                        sL -= get_len(S[i])
+                        i += 1
+                    if i > 0:
+                        S = S[i:]
                     return S, sL
             return None, None
 
-        def rhs_eff(cset):
-            """Effective RHS after accounting fixed-in edges."""
-            return len(cset) - 1 - sum(1 for e in cset if e in fixed)
-
-        def is_violated_now(cset):
-            """Check current MST violation: lhs > rhs_eff."""
+        # ---- Separation check (uses stored RHS; important for lifting) ----
+        def is_violated_now(cset, rhs):
             lhs = sum(1 for e in cset if e in mst_set)
-            return lhs > rhs_eff(cset)
+            return lhs > rhs
 
-        def try_shrink_and_add(seed_S, seed_sumL):
-            """Shrink from a seed using optimistic certificate; lazily confirm with DSU if margin is thin."""
-            if not seed_S or len(seed_S) <= 1:
-                return
-            S_work = sorted(seed_S, key=lambda e: get_len(e), reverse=True)
-            sumL = seed_sumL
+        # ---- Certificate that matches LaTeX + safe exact fallback ----
+        def cert_type(Slist):
+            """
+            Returns:
+            "opt"   if optimistic cert holds (sumℓ + U > B')
+            "exact" if optimistic fails but exact cert holds (sumℓ + completion > B')
+            None    otherwise (cannot certify infeasibility)
+            Also rejects cyclic (fixed ∪ S) sets.
+            """
+            Sset = set(Slist)
+            _, has_cycle = contract_info(fixed | Sset)
+            if has_cycle:
+                return None  # skip cyclic sets (cannot appear in any tree; usually useless)
+
+            sumS = sum(get_len(e) for e in Sset)
+
+            U = U_of(Sset)
+            if U != float("inf") and (sumS + U) > (Bp + EPS):
+                return "opt"
+
+            comp = completion_mst_cost(Sset)
+            if comp != float("inf") and (sumS + comp) > (Bp + EPS):
+                return "exact"
+
+            return None
+
+        # ---- Step (2) shrinking to inclusion-minimal S* under cert ----
+        def shrink_to_inclusion_minimal(S_seed, sum_seed):
+            """
+            Implements LaTeX Step (2), with safe exact fallback:
+            - remove longest until sum <= B' -> first S'
+            - if cert holds for S', keep deleting edges (starting from longest) while cert holds
+                until inclusion-minimal (no single-edge deletion preserves cert)
+            """
+            if not S_seed or len(S_seed) <= 1:
+                return None
+
+            S_work = sorted(S_seed, key=lambda e: get_len(e), reverse=True)
+            sumL = sum_seed
+
+            # first S' with sumℓ <= B'
             idx = 0
             while idx < len(S_work) and sumL > Bp + EPS:
-                sumL -= get_len(S_work[idx]); idx += 1
-            Sprime = S_work[idx:]  # first with sumℓ ≤ B'
+                sumL -= get_len(S_work[idx])
+                idx += 1
+            Sprime = S_work[idx:]
+            if not Sprime or len(Sprime) <= 1:
+                return None
 
-            def margin(Slist):
-                return (sum(get_len(e) for e in Slist) + U_of(Slist)) - Bp
+            # must be certifiable at Sprime to proceed (LaTeX logic)
+            if cert_type(Sprime) is None:
+                return None
 
-            if Sprime:
-                # strict effective-RHS and current-violation screening
-                if rhs_eff(Sprime) <= 0:
-                    return
-                if margin(Sprime) > 0:
-                    # If optimistic margin is big enough, still require current violation
-                    if is_violated_now(Sprime):
-                        cuts.append((set(Sprime), len(Sprime) - 1))
-                else:
-                    # thin margin: do exact completion
-                    exact_total = sum(get_len(e) for e in Sprime) + completion_mst_cost(Sprime)
-                    if exact_total > Bp + EPS and is_violated_now(Sprime):
-                        cuts.append((set(Sprime), len(Sprime) - 1))
+            Sstar = sorted(Sprime, key=lambda e: get_len(e), reverse=True)
 
-        # --- (1) primary seed from T^λ ∩ A ---
+            # inclusion-minimal: keep removing an edge if cert still holds, restart scan
+            changed = True
+            while changed and len(Sstar) > 1:
+                changed = False
+                for j in range(len(Sstar)):  # longest->shortest due to sorting
+                    trial = Sstar[:j] + Sstar[j+1:]
+                    if len(trial) <= 1:
+                        continue
+                    if cert_type(trial) is not None:
+                        Sstar = sorted(trial, key=lambda e: get_len(e), reverse=True)
+                        changed = True
+                        break
+
+            return Sstar if len(Sstar) > 1 else None
+
+        # ---- Lifting only for residual-minimal covers (LaTeX §Lifting) ----
+        def lifted_cover_from_minimal(S_minimal):
+            if not S_minimal:
+                return None
+            Sbase = set(S_minimal)
+
+            # also skip if fixed ∪ S has cycle (means S can't be in a tree anyway)
+            _, has_cycle = contract_info(fixed | Sbase)
+            if has_cycle:
+                return None
+
+            Lmax = max(get_len(e) for e in Sbase)
+            lift_add = {f for f in A if f not in Sbase and get_len(f) + EPS >= Lmax}
+            if not lift_add:
+                return None
+            Slift = Sbase | lift_add
+            rhs = len(S_minimal) - 1  # RHS stays based on original minimal cover
+            return Slift, rhs
+
+        cuts = []
+
+        # -------------------------
+        # (1) Primary seed from T^λ ∩ A
+        # -------------------------
         T_desc = sorted(TcapA, key=lambda e: get_len(e), reverse=True)
         S_seed, sumL_seed = build_residual_minimal_cover(T_desc)
         if not S_seed:
             return []
-        S_seed = list(S_seed)
 
-        # Add primary seed only if effective and violated now
-        if rhs_eff(S_seed) > 0 and is_violated_now(S_seed):
-            cuts.append((set(S_seed), len(S_seed) - 1))
-        # and try to shrink/confirm
-        try_shrink_and_add(S_seed, sumL_seed)
+        # Add seed cut if it separates and is not cyclic
+        seed_set = set(S_seed)
+        if cert_type(seed_set) is not None:
+            rhs_seed = len(S_seed) - 1
+            if rhs_seed > 0 and is_violated_now(seed_set, rhs_seed):
+                cuts.append((seed_set, rhs_seed))
 
-            # --- (1c) Lifting on S_seed (sequence-independent, safe) ---
-        if S_seed and rhs_eff(S_seed) > 0 and is_violated_now(S_seed):
-            S_base = set(S_seed)
-            # L_max = max length in S_seed
-            L_max = max(get_len(e) for e in S_base)
+        # (2) Shrink to inclusion-minimal S* under cert, add if separates
+        S_star = shrink_to_inclusion_minimal(S_seed, sumL_seed)
+        if S_star:
+            S_star_set = set(S_star)
+            rhs_star = len(S_star) - 1
+            if rhs_star > 0 and is_violated_now(S_star_set, rhs_star):
+                cuts.append((S_star_set, rhs_star))
 
-            # Add all admissible edges with ℓ(f) ≥ L_max
-            lift_add = {
-                f for f in A
-                if f not in S_base and get_len(f) + EPS >= L_max
-            }
+        # Lifting on residual-minimal seed cover (LaTeX-consistent)
+        lifted = lifted_cover_from_minimal(S_seed)
+        if lifted:
+            Slift, rhs_lift = lifted
+            if rhs_lift > 0 and is_violated_now(Slift, rhs_lift):
+                cuts.append((Slift, rhs_lift))
 
-            if lift_add:
-                S_lift = S_base | lift_add
-                # Keep RHS = |S_seed| - 1 (original minimal cover size)
-                if rhs_eff(S_lift) > 0 and is_violated_now(S_lift):
-                    cuts.append((S_lift, len(S_seed) - 1))
-
-        # --- (1b) micro-seed: top-L heaviest admissible edges ---
-        if L_MICRO > 0 and len(A) > 0:
+        # -------------------------
+        # (1b) Micro-seed: top-L heaviest admissible edges
+        # -------------------------
+        if L_MICRO > 0:
             heavyA = sorted(A, key=lambda e: get_len(e), reverse=True)[:L_MICRO]
             S2, sumL2 = build_residual_minimal_cover(heavyA)
             if S2:
                 S2set = set(S2)
-                # require effectiveness and current violation; avoid duplicate of S_seed
-                if rhs_eff(S2set) > 0 and S2set != set(S_seed) and is_violated_now(S2set):
-                    cuts.append((S2set, len(S2) - 1))
-                    try_shrink_and_add(S2, sumL2)
-                    # --- (1b-lift) Lifting on S2 (same rule as S_seed) ---
-                    L_max2 = max(get_len(e) for e in S2set)
+                if S2set != seed_set and cert_type(S2set) is not None:
+                    rhs2 = len(S2) - 1
+                    if rhs2 > 0 and is_violated_now(S2set, rhs2):
+                        cuts.append((S2set, rhs2))
 
-                    lift_add2 = {
-                        f for f in A
-                        if f not in S2set and get_len(f) + EPS >= L_max2
-                    }
+                S2_star = shrink_to_inclusion_minimal(S2, sumL2)
+                if S2_star:
+                    S2_star_set = set(S2_star)
+                    rhs2_star = len(S2_star) - 1
+                    if rhs2_star > 0 and is_violated_now(S2_star_set, rhs2_star):
+                        cuts.append((S2_star_set, rhs2_star))
 
-                    if lift_add2:
-                        S2_lift = S2set | lift_add2
-                        # RHS stays |S2| - 1 (based on the original minimal cover)
-                        if rhs_eff(S2_lift) > 0 and is_violated_now(S2_lift):
-                            cuts.append((S2_lift, len(S2) - 1))
+                lifted2 = lifted_cover_from_minimal(S2)
+                if lifted2:
+                    S2_lift, rhs2_lift = lifted2
+                    if rhs2_lift > 0 and is_violated_now(S2_lift, rhs2_lift):
+                        cuts.append((S2_lift, rhs2_lift))
 
-       
-        # --- dedup & dominance-aware selection ---
+        # -------------------------
+        # Dedup + dominance filtering
+        # -------------------------
         uniq = {}
         for cset, rhs in cuts:
-            key = tuple(sorted(cset))  # stable order for hashing
+            key = tuple(sorted(cset))
             best = uniq.get(key)
-            # if same support appears with different rhs, keep the *stronger* (smaller rhs),
-            # and if rhs ties, keep the one with smaller support just for consistency
-            if best is None or rhs < best[1] or (rhs == best[1] and len(cset) < len(best[0])):
+            if best is None or rhs < best[1]:
                 uniq[key] = (cset, rhs)
 
         final = list(uniq.values())
-        # process stronger cuts first: smaller rhs, then smaller |S|
         final.sort(key=lambda t: (t[1], len(t[0])))
 
         kept = []
         for cset, rhs in final:
-            if rhs_eff(cset) <= 0:
+            if rhs <= 0:
                 continue
-            # drop cset if there is ALREADY a stronger cut (dset,drhs) with
-            # dset ⊆ cset and drhs ≤ rhs
-            dominated = any(dset <= cset and drhs <= rhs for dset, drhs in kept)
-            if not dominated:
-                kept.append((cset, rhs))
+            if any(dset <= cset and drhs <= rhs for dset, drhs in kept):
+                continue
+            kept.append((cset, rhs))
+
         return kept[:MAX_RETURN]
+
 
 
     
@@ -925,8 +1321,8 @@ class LagrangianMST:
             eps              = 1e-12
 
             # Depth-based behaviour
-            max_cut_depth = getattr(self, "max_cut_depth", 3)                 # where we ADD cuts
-            max_mu_depth  = getattr(self, "max_mu_depth", 5)      # where we UPDATE μ / use cuts in dual
+            max_cut_depth = getattr(self, "max_cut_depth", 30)                 # where we ADD cuts
+            max_mu_depth  = getattr(self, "max_mu_depth", 50)      # where we UPDATE μ / use cuts in dual
             is_root       = (depth == 0)
 
             # Node-level separation parameters
@@ -958,7 +1354,7 @@ class LagrangianMST:
             #         self.best_cut_multipliers[i] = 0.0
 
             # Ensure λ starts in a reasonable range (consistent with compute_modified_weights)
-            self.lmbda = max(0.0, min(getattr(self, "lmbda", 0.4), 1e4))
+            self.lmbda = max(0.0, min(getattr(self, "lmbda", 0.11), 1e4))
 
             # no_improvement_count = 0
             polyak_enabled       = True
