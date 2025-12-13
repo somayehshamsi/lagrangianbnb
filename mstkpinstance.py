@@ -3,8 +3,8 @@ import networkx as nx
 import matplotlib.pyplot as plt
 # import numpy as np
 
-MAX_EDGE_WEIGHT = 200
-MAX_EDGE_LENGTH = 200
+MAX_EDGE_WEIGHT = 120
+MAX_EDGE_LENGTH = 120
 CONVEX_BUDGET_FACTOR = 0.6
 
 

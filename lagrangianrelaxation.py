@@ -64,7 +64,7 @@ class LagrangianMST:
 
 
     def __init__(self, edges, num_nodes, budget, fixed_edges=None, excluded_edges=None,
-                 initial_lambda=0.11, step_size=0.001, max_iter=10, 
+                 initial_lambda=0.4, step_size=0.001, max_iter=10, 
                  use_cover_cuts=False, cut_frequency=5, use_bisection=False,
                  verbose=False, shared_graph=None):
         start_time = time()
@@ -181,7 +181,7 @@ class LagrangianMST:
         if initial_lambda is not None:
             self.lmbda = float(initial_lambda)
         else:
-            self.lmbda = getattr(self, "lmbda", 0.11)
+            self.lmbda = getattr(self, "lmbda", 0.4)
 
         if step_size is not None:
             self.step_size = float(step_size)
@@ -1354,7 +1354,7 @@ class LagrangianMST:
             #         self.best_cut_multipliers[i] = 0.0
 
             # Ensure λ starts in a reasonable range (consistent with compute_modified_weights)
-            self.lmbda = max(0.0, min(getattr(self, "lmbda", 0.11), 1e4))
+            self.lmbda = max(0.0, min(getattr(self, "lmbda", 0.4), 1e4))
 
             # no_improvement_count = 0
             polyak_enabled       = True
