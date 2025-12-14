@@ -135,7 +135,7 @@ def run_experiment(instance, seed, config, args):
         mstkp_instance.edges,
         mstkp_instance.num_nodes,
         mstkp_instance.budget,
-        initial_lambda=0.4,
+        initial_lambda=0.9,
         inherit_lambda=inherit_lambda,
         inherit_step_size = inherit_step_size,
         branching_rule=branching_rule,
