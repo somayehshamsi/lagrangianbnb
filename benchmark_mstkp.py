@@ -135,7 +135,7 @@ def run_experiment(instance, seed, config, args):
         mstkp_instance.edges,
         mstkp_instance.num_nodes,
         mstkp_instance.budget,
-        initial_lambda=0.9,
+        initial_lambda=0.04,
         inherit_lambda=inherit_lambda,
         inherit_step_size = inherit_step_size,
         branching_rule=branching_rule,
@@ -403,47 +403,47 @@ def main():
             "inherit_lambda": True
         }
         ,
-        # {
-        #     "branching_rule": "reliability",
-        #     "use_bisection": False,
-        #     "use_2opt": False,
-        #     "use_shooting": False,
-        #     "cover_cuts": True,
-        #     "inherit-step-size": False,
-        #     "inherit_lambda": True
-        # }
-        #         ,
+        {
+            "branching_rule": "reliability",
+            "use_bisection": False,
+            "use_2opt": False,
+            "use_shooting": False,
+            "cover_cuts": True,
+            "inherit-step-size": False,
+            "inherit_lambda": True
+        }
+                ,
 
-        # {
-        #     "branching_rule": "hybrid_strong_fractional",
-        #     "use_bisection": False,
-        #     "use_2opt": False,
-        #     "use_shooting": False,
-        #     "cover_cuts": True,
-        #     "inherit-step-size": False,
-        #     "inherit_lambda": True
-        # }
+        {
+            "branching_rule": "hybrid_strong_fractional",
+            "use_bisection": False,
+            "use_2opt": False,
+            "use_shooting": False,
+            "cover_cuts": True,
+            "inherit-step-size": False,
+            "inherit_lambda": True
+        }
 
-        # ,
-        # {
-        #     "branching_rule": "random_mst",
-        #     "use_bisection": False,
-        #     "use_2opt": False,
-        #     "use_shooting": False,
-        #     "cover_cuts": True,
-        #     "inherit-step-size": False,
-        #     "inherit_lambda": True
-        # }
-        # , 
-        # {
-        #     "branching_rule": "random_fractional",
-        #     "use_bisection": False,
-        #     "use_2opt": False,
-        #     "use_shooting": False,
-        #     "cover_cuts": True,
-        #     "inherit-step-size": False,
-        #     "inherit_lambda": True
-        # }
+        ,
+        {
+            "branching_rule": "random_mst",
+            "use_bisection": False,
+            "use_2opt": False,
+            "use_shooting": False,
+            "cover_cuts": True,
+            "inherit-step-size": False,
+            "inherit_lambda": True
+        }
+        , 
+        {
+            "branching_rule": "random_fractional",
+            "use_bisection": False,
+            "use_2opt": False,
+            "use_shooting": False,
+            "cover_cuts": True,
+            "inherit-step-size": False,
+            "inherit_lambda": True
+        }
         # ,
         # {
         #     "branching_rule": "sb_fractional",
@@ -465,7 +465,7 @@ def main():
         #     "inherit-step-size": False,
         #     "inherit_lambda": True
         # }
-        # ,
+        ,
         
 
         {
