@@ -393,36 +393,36 @@ def main():
 
     # Define configurations with varied cover_cuts and inherit_lambda (kept as you provided)
     configs = [
-        {
-            "branching_rule": "most_fractional",
-            "use_bisection": False,
-            "use_2opt": False,
-            "use_shooting": False,
-            "cover_cuts": True,
-            "inherit-step-size": False,
-            "inherit_lambda": True
-        }
-        ,
-        {
-            "branching_rule": "reliability",
-            "use_bisection": False,
-            "use_2opt": False,
-            "use_shooting": False,
-            "cover_cuts": True,
-            "inherit-step-size": False,
-            "inherit_lambda": True
-        }
-                ,
+        # {
+        #     "branching_rule": "most_fractional",
+        #     "use_bisection": False,
+        #     "use_2opt": False,
+        #     "use_shooting": False,
+        #     "cover_cuts": True,
+        #     "inherit-step-size": False,
+        #     "inherit_lambda": True
+        # }
+        # ,
+        # {
+        #     "branching_rule": "reliability",
+        #     "use_bisection": False,
+        #     "use_2opt": False,
+        #     "use_shooting": False,
+        #     "cover_cuts": True,
+        #     "inherit-step-size": False,
+        #     "inherit_lambda": True
+        # }
+        #         ,
 
-        {
-            "branching_rule": "hybrid_strong_fractional",
-            "use_bisection": False,
-            "use_2opt": False,
-            "use_shooting": False,
-            "cover_cuts": True,
-            "inherit-step-size": False,
-            "inherit_lambda": True
-        }
+        # {
+        #     "branching_rule": "hybrid_strong_fractional",
+        #     "use_bisection": False,
+        #     "use_2opt": False,
+        #     "use_shooting": False,
+        #     "cover_cuts": True,
+        #     "inherit-step-size": False,
+        #     "inherit_lambda": True
+        # }
 
         # ,
         # {
