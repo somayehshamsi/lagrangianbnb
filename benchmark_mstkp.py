@@ -135,7 +135,7 @@ def run_experiment(instance, seed, config, args):
         mstkp_instance.edges,
         mstkp_instance.num_nodes,
         mstkp_instance.budget,
-        initial_lambda=0.04,
+        initial_lambda=0.05,
         inherit_lambda=inherit_lambda,
         inherit_step_size = inherit_step_size,
         branching_rule=branching_rule,
@@ -394,6 +394,17 @@ def main():
     # Define configurations with varied cover_cuts and inherit_lambda (kept as you provided)
     configs = [
         {
+            "branching_rule": "pseudocost",
+            "use_bisection": False,
+            "use_2opt": False,
+            "use_shooting": False,
+            "cover_cuts": True,
+            "inherit-step-size": False,
+            "inherit_lambda": True
+        }
+
+        ,
+        {
             "branching_rule": "most_fractional",
             "use_bisection": False,
             "use_2opt": False,
@@ -444,27 +455,27 @@ def main():
             "inherit-step-size": False,
             "inherit_lambda": True
         }
-        # ,
-        # {
-        #     "branching_rule": "sb_fractional",
-        #     "use_bisection": False,
-        #     "use_2opt": False,
-        #     "use_shooting": False,
-        #     "cover_cuts": True,
-        #     "inherit-step-size": False,
-        #     "inherit_lambda": True
-        # }
-        # ,
+        ,
+        {
+            "branching_rule": "sb_fractional",
+            "use_bisection": False,
+            "use_2opt": False,
+            "use_shooting": False,
+            "cover_cuts": True,
+            "inherit-step-size": False,
+            "inherit_lambda": True
+        }
+        ,
 
-        # {
-        #     "branching_rule": "strong_branching",
-        #     "use_bisection": False,
-        #     "use_2opt": False,
-        #     "use_shooting": False,
-        #     "cover_cuts": True,
-        #     "inherit-step-size": False,
-        #     "inherit_lambda": True
-        # }
+        {
+            "branching_rule": "strong_branching",
+            "use_bisection": False,
+            "use_2opt": False,
+            "use_shooting": False,
+            "cover_cuts": True,
+            "inherit-step-size": False,
+            "inherit_lambda": True
+        }
         ,
         
 

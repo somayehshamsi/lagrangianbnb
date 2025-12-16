@@ -33,7 +33,7 @@ def parse_arguments():
     parser.add_argument(
         "rule",
         # choices=["random_mst", "random_all","random_fractional", "most_violated", "critical_edge", "most_fractional", "strong_branching", "strong_branching_sim","sb_fractional", "strong_branching_all"],
-        choices=["random_mst", "random_all","random_fractional", "most_violated", "critical_edge", "most_fractional", "strong_branching", "strong_branching_sim","sb_fractional", "strong_branching_all", "reliability", "hybrid_strong_fractional"],
+        choices=["random_mst", "random_all","random_fractional", "most_violated", "critical_edge", "most_fractional", "strong_branching", "strong_branching_sim","sb_fractional", "strong_branching_all", "reliability", "pseudocost","hybrid_strong_fractional"],
         help="The branching rule to use (random_mst: pick from MST edges, random_all: pick from all variables, most_fractional: pick the most fractional edge, strong_branching: use strong branching)"
     )
     parser.add_argument(
@@ -189,7 +189,7 @@ if __name__ == "__main__":
         mstkp_instance.edges,
         mstkp_instance.num_nodes,
         mstkp_instance.budget,
-        initial_lambda=0.04,
+        initial_lambda=0.05,
         inherit_lambda=args.inherit_lambda,
         branching_rule=args.rule,
         step_size=0.001,
