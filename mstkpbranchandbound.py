@@ -507,7 +507,7 @@ class MSTNode(Node):
             MAX_SB_CANDIDATES = 10
             if self.branching_rule == "sb_fractional" and normalized_edge_weights is not None:
                 candidate_edges.sort(
-                    key=lambda e: -abs(normalized_edge_weights[e] - 0.5)
+                    key=lambda e: abs(normalized_edge_weights[e] - 0.5)
                 )
             candidate_edges = candidate_edges[:MAX_SB_CANDIDATES]
             # Collect edges that lead to pruning
