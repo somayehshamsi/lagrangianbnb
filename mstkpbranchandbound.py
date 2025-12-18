@@ -504,7 +504,7 @@ class MSTNode(Node):
             if self.verbose:
                 print(f"Node {id(self)}: {self.branching_rule} evaluating {len(candidate_edges)} edges: {candidate_edges}")
 
-            MAX_SB_CANDIDATES = 10
+            MAX_SB_CANDIDATES = 5
             if self.branching_rule == "sb_fractional" and normalized_edge_weights is not None:
                 candidate_edges.sort(
                     key=lambda e: abs(normalized_edge_weights[e] - 0.5)
