@@ -1119,7 +1119,7 @@ class LagrangianMST:
 
             # Decide iteration limit for this node:
             iter_limit = root_max_iter if is_root else max_iter
-            iter_limit = root_max_iter * 1.1 if is_root and self.use_cover_cuts else max_iter
+            # iter_limit = root_max_iter * 1.1 if is_root and self.use_cover_cuts else max_iter
 
             # ------------------------------------------------------------------
             # 5) Subgradient iterations
