@@ -413,16 +413,16 @@ def main():
             "inherit-step-size": False,
             "inherit_lambda": True
         }
-        # ,
-        # {
-        #     "branching_rule": "reliability",
-        #     "use_bisection": False,
-        #     "use_2opt": False,
-        #     "use_shooting": False,
-        #     "cover_cuts": False,
-        #     "inherit-step-size": False,
-        #     "inherit_lambda": True
-        # }
+        ,
+        {
+            "branching_rule": "reliability",
+            "use_bisection": False,
+            "use_2opt": False,
+            "use_shooting": False,
+            "cover_cuts": False,
+            "inherit-step-size": False,
+            "inherit_lambda": True
+        }
         ,
 
         {
