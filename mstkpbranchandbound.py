@@ -516,8 +516,7 @@ class MSTNode(Node):
             best_edge = None
             best_score = -float('inf')
             scores = []
-            for edge in candidate_edges:
-                
+            for edge in candidate_edges:                
                 score,_,_, fix_infeasible, exclude_infeasible = self.calculate_strong_branching_score(edge)
                 scores.append((edge, score))
                 if fix_infeasible:

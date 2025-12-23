@@ -1118,7 +1118,7 @@ class LagrangianMST:
             mst_mask = self._mst_mask
 
             # Decide iteration limit for this node:
-            iter_limit = root_max_iter * 0.9 if is_root else max_iter
+            iter_limit = root_max_iter * 1.1 if is_root else max_iter
             # iter_limit = root_max_iter * 1.1 if is_root and self.use_cover_cuts else max_iter
 
             # ------------------------------------------------------------------
