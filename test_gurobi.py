@@ -525,7 +525,7 @@ def parse_arguments():
     parser.add_argument(
         "--time-limit",
         type=float,
-        default=1800.0,
+        default=2700.0,
         help="Wall-clock time limit per instance in seconds (default: 60)"
     )
     parser.add_argument(

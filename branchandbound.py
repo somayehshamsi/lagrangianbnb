@@ -285,7 +285,7 @@ class BranchAndBound:
 
 
 
-    def solve(self, root: Node, time_limit_s: float = 1800.0):
+    def solve(self, root: Node, time_limit_s: float = 2700.0):
         from mstkpbranchandbound import MSTNode
 
         self.compute_initial_upper_bound(root)
@@ -656,7 +656,7 @@ class BranchAndBound:
 
         while lower_bound < upper_bound:
             # Check for timeout
-            if time.time() - start_time > 1800:
+            if time.time() - start_time > 2700:
                 self.timed_out = True
                 if self.verbose:
                     print("Shooting method stopped: Exceeded 2000-second time limit")
