@@ -66,7 +66,7 @@ def parse_arguments():
     parser.add_argument(
     "--time-limit",
     type=float,
-    default=2700.0,  # screening default; override to 3600 for finals
+    default=1800.0,  # screening default; override to 3600 for finals
     help="Time limit per instance in seconds (default: 1800)"
 )
     return parser.parse_args()
