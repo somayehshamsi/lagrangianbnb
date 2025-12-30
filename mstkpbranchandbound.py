@@ -466,8 +466,6 @@ class MSTNode(Node):
             else:  # sb_fractional
                 shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
                 # shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
-                normalized_edge_weights = None  # only used in sb_fractional
-
                 if shor_primal_solution is None:
                     # No fractional info available -> fall back to MST edges
                     mst_edges = [tuple(sorted((u, v))) for u, v in self.lagrangian_solver.best_mst_edges]
@@ -489,8 +487,9 @@ class MSTNode(Node):
                         normalized_edge_weights[e] < 1.0 - tolerance
                     ]
                     if not candidate_edges:
+                        mst_edges = [tuple(sorted((u, v))) for u, v in self.lagrangian_solver.best_mst_edges]
                         candidate_edges = [
-                        e for e in normalized_edge_weights
+                        e for e in mst_edges
                         if e not in self.fixed_edges and
                         e not in self.excluded_edges and
                         e not in self.branched_edges
