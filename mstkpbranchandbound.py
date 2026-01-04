@@ -1754,14 +1754,14 @@ class MSTNode(Node):
         u, v = tuple(sorted(edge))
 
         # --- Strong-branching probe: FIX edge ---
-        fixed_lower_bound = self.simulate_branching_bound(edge, fix_edge=True, max_iters=2)
+        fixed_lower_bound = self.simulate_branching_bound(edge, fix_edge=True, max_iters=1)
         fix_infeasible = math.isnan(fixed_lower_bound) or math.isinf(fixed_lower_bound)
 
         if self.verbose and fix_infeasible:
             print(f"Fixed simulation for edge {edge} is infeasible (LB={fixed_lower_bound})")
 
         # --- Strong-branching probe: EXCLUDE edge ---
-        excluded_lower_bound = self.simulate_branching_bound(edge, fix_edge=False, max_iters=2)
+        excluded_lower_bound = self.simulate_branching_bound(edge, fix_edge=False, max_iters=1)
         exclude_infeasible = math.isnan(excluded_lower_bound) or math.isinf(excluded_lower_bound)
 
         if self.verbose and exclude_infeasible:
