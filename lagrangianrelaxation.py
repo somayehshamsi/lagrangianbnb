@@ -225,7 +225,7 @@ class LagrangianMST:
         self._invalidate_weight_cache()
         if hasattr(self, 'mst_cache'):
             self.mst_cache = LRUCache(capacity=5)
-    def generate_cover_cuts(self, mst_edges):  # ai suggested
+    def generate_cover_cuts(self, mst_edges):  
         """
         Stronger cover cuts (tightened):
         - Residualization: A, B' (clamped), fixed/excluded respected
