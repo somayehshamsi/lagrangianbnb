@@ -464,8 +464,8 @@ class MSTNode(Node):
 
                 ]
             else:  # sb_fractional
-                shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
-                # shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
+                # shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
+                shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
                 if shor_primal_solution is None:
                     # No fractional info available -> fall back to MST edges
                     mst_edges = [tuple(sorted((u, v))) for u, v in self.lagrangian_solver.best_mst_edges]
@@ -582,8 +582,8 @@ class MSTNode(Node):
             return [best_edge] if best_edge else None
 
         elif self.branching_rule == "most_fractional":
-            shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
-            # shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
+            # shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
+            shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
 
 
             if shor_primal_solution is None:
@@ -624,8 +624,8 @@ class MSTNode(Node):
 
         
         elif self.branching_rule == "random_fractional":
-            shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
-            # shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
+            # shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
+            shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
             if shor_primal_solution is None:
                 candidates = [
                     tuple(sorted((u, v))) for u, v in self.lagrangian_solver.best_mst_edges
@@ -1069,8 +1069,8 @@ class MSTNode(Node):
             # # For now, we just take them as they come from MST.
             # unhistoried = unhistoried[:max_sb_evals]
             # 1) Fractional solution for prioritization
-            shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
-            # shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
+            # shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
+            shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
 
 
             candidate_edges = []
@@ -1258,8 +1258,8 @@ class MSTNode(Node):
 
         elif self.branching_rule == "pseudocost":
             # Use fractional info (weighted-average solution) to estimate f in [0,1]
-            shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
-            # shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
+            # shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
+            shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
 
 
             # Candidate set: prefer fractional solution edges; fallback to MST edges
@@ -1342,8 +1342,8 @@ class MSTNode(Node):
             )
             if use_strong_branching:
                 # Strong branching phase with computational limits
-                shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
-                # shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
+                # shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
+                shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
 
 
                 if shor_primal_solution is not None:
@@ -1423,8 +1423,8 @@ class MSTNode(Node):
             elif self.verbose:
                 print(f"Hybrid (fractional): using fractional at depth {self.depth}")
 
-            shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
-            # shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
+            # shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
+            shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
 
 
             if shor_primal_solution is None:
