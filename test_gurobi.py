@@ -743,6 +743,8 @@ def summarize_for_paper(results, time_limit):
     solved_pct = 100.0 * df["solved"].mean()
     par10_mean = df["par10"].mean()
     time_all_mean = df["solve_time"].mean()
+    nodes_all_mean = df["nodes_explored"].mean()   
+
     time_solved_mean = df.loc[df["solved"], "solve_time"].mean()
     nodes_solved_mean = df["nodes_solved"].mean()
 
@@ -750,6 +752,7 @@ def summarize_for_paper(results, time_limit):
         "solved_pct": solved_pct,
         "par10": par10_mean,
         "time_all": time_all_mean,
+        "nodes_all": nodes_all_mean,         
         "time_solved": time_solved_mean,
         "nodes_solved": nodes_solved_mean,
     }])
