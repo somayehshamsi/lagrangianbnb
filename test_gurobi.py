@@ -2581,8 +2581,9 @@ def solve_with_gurobi(instance, seed, time_limit_s, verbose=False):
 
     # z[k,i,j] for k in V, (i,j) in A
     # IMPORTANT: this is big: O(n * |A|) binaries.
+    
     z = model.addVars(((k, i, j) for k in V for (i, j) in A),
-                      vtype=GRB.BINARY, name="z")
+                  vtype=GRB.CONTINUOUS, lb=0.0, name="z")
 
     # Objective
     model.setObjective(gp.quicksum(c[e] * x[e] for e in E), GRB.MINIMIZE)
