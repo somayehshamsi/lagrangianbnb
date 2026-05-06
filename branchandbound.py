@@ -359,6 +359,17 @@ class BranchAndBound:
                     self.best_upper_bound = upper_bound
                     self.best_solution = node
 
+                # if (
+                #     node_counter == 1
+                #     and self.best_upper_bound < float("inf")
+                #     and hasattr(node, "apply_peg_test")
+                # ):
+                #     n_fixed = node.apply_peg_test(
+                #         incumbent_ub=self.best_upper_bound,
+                #         max_tests=10,
+                #         candidate_source="mst"
+                #     )
+                              
                 if self.verbose:
                     print(f"\n--- Node {node_counter} ---")
                     print(f"Lower bound: {node.local_lower_bound}")

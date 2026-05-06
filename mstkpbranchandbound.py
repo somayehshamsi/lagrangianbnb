@@ -153,6 +153,24 @@ class MSTNode(Node):
         # self.new_cuts = []  # best_cuts already includes surviving cuts
         # -----------------------------------------------------------
 
+        # --- SYNC cuts and multipliers with solver's final state ---
+        self.active_cuts = [
+            (set(cut), int(rhs))
+            for (cut, rhs) in (getattr(self.lagrangian_solver, "best_cuts", []) or [])
+        ]
+
+        self.cut_multipliers = dict(
+            getattr(
+                self.lagrangian_solver,
+                "best_cut_multipliers_for_best_bound",
+                getattr(self.lagrangian_solver, "best_cut_multipliers", {})
+            ) or {}
+        )
+
+        # Important: once the solver has decided its final pool for this node,
+        # do not keep a second parallel "new_cuts" list alive.
+        self.new_cuts = []
+
 
         # self.mst_edges = [tuple(sorted((u, v))) for u, v in self.lagrangian_solver.last_mst_edges]
         raw_edges = self.lagrangian_solver.last_mst_edges
@@ -321,10 +339,55 @@ class MSTNode(Node):
         F_fixed = set(self.fixed_edges) | {normalized_edge}
         must_prune_fixed = any((len(cut_set & F_fixed) > rhs) for (cut_set, rhs) in all_cuts)
 
+        T_parent = set(self.mst_edges or [])
         # --- helper: project & remap to a child ---
+        # def _project_and_remap_for_child(fixed_child_edges, excluded_child_edges):
+        #     infeasible = False
+        #     # key: frozenset(S_free) -> (rhs', μ)  (if duplicates after projection, keep strongest = smallest rhs')
+        #     projected = {}
+
+        #     for old_i, (S, rhs) in enumerate(all_cuts):
+        #         S_known = {e for e in S if e in known_edges}
+        #         S_fixed = S_known & fixed_child_edges
+        #         S_free  = S_known - fixed_child_edges - excluded_child_edges
+
+        #         rhs_prime = int(rhs) - len(S_fixed)
+        #         if rhs_prime < 0:
+        #             infeasible = True
+        #             break
+        #         if len(S_free) <= rhs_prime:
+        #             continue
+
+        #         key = frozenset(S_free)
+        #         mu_old = float(current_multipliers.get(old_i, 0.0))
+        #         prev = projected.get(key)
+        #         if prev is None or rhs_prime < prev[0] or (rhs_prime == prev[0] and abs(mu_old) > abs(prev[1])):
+        #             projected[key] = (rhs_prime, mu_old)
+
+        #     if infeasible:
+        #         return None, None, True
+
+        #     # deterministic ordering: you already sort by (-|S_free|, rhs', edges)
+        #     def _edge_tuple_sort_key(sfree):
+        #         return tuple(sorted(sfree))
+
+        #     ordered = sorted(
+        #         projected.items(),
+        #         key=lambda kv: (-len(kv[0]), kv[1][0], _edge_tuple_sort_key(kv[0]))
+        #     )
+
+        #     # *** limit to at most max_child_cuts strongest cuts ***
+        #     if len(ordered) > max_child_cuts:
+        #         ordered = ordered[:max_child_cuts]
+
+        #     kept_cuts, kept_mu = [], {}
+        #     for new_idx, (sfree_key, (rhs_prime, mu_val)) in enumerate(ordered):
+        #         kept_cuts.append((set(sfree_key), int(rhs_prime)))
+        #         kept_mu[new_idx] = float(mu_val)
+
+        #     return kept_cuts, kept_mu, False
         def _project_and_remap_for_child(fixed_child_edges, excluded_child_edges):
             infeasible = False
-            # key: frozenset(S_free) -> (rhs', μ)  (if duplicates after projection, keep strongest = smallest rhs')
             projected = {}
 
             for old_i, (S, rhs) in enumerate(all_cuts):
@@ -339,35 +402,44 @@ class MSTNode(Node):
                 if len(S_free) <= rhs_prime:
                     continue
 
+                # approximate usefulness using current parent's tree
+                lhs_est = len(T_parent & S_free)
+                viol_est = lhs_est - rhs_prime
+
                 key = frozenset(S_free)
                 mu_old = float(current_multipliers.get(old_i, 0.0))
                 prev = projected.get(key)
-                if prev is None or rhs_prime < prev[0] or (rhs_prime == prev[0] and abs(mu_old) > abs(prev[1])):
-                    projected[key] = (rhs_prime, mu_old)
+
+                if (
+                    prev is None
+                    or rhs_prime < prev["rhs"]
+                    or (rhs_prime == prev["rhs"] and viol_est > prev["viol"])
+                ):
+                    projected[key] = {
+                        "rhs": rhs_prime,
+                        "mu": mu_old,
+                        "viol": viol_est,
+                    }
 
             if infeasible:
                 return None, None, True
 
-            # deterministic ordering: you already sort by (-|S_free|, rhs', edges)
-            def _edge_tuple_sort_key(sfree):
-                return tuple(sorted(sfree))
-
             ordered = sorted(
                 projected.items(),
-                key=lambda kv: (-len(kv[0]), kv[1][0], _edge_tuple_sort_key(kv[0]))
+                key=lambda kv: (-kv[1]["viol"], len(kv[0]), kv[1]["rhs"], tuple(sorted(kv[0])))
             )
 
-            # *** limit to at most max_child_cuts strongest cuts ***
             if len(ordered) > max_child_cuts:
                 ordered = ordered[:max_child_cuts]
 
             kept_cuts, kept_mu = [], {}
-            for new_idx, (sfree_key, (rhs_prime, mu_val)) in enumerate(ordered):
-                kept_cuts.append((set(sfree_key), int(rhs_prime)))
-                kept_mu[new_idx] = float(mu_val)
+            for new_idx, (sfree_key, info) in enumerate(ordered):
+                kept_cuts.append((set(sfree_key), int(info["rhs"])))
+                kept_mu[new_idx] = float(info["mu"])
 
             return kept_cuts, kept_mu, False
-
+        
+        
         # ---- children ----
         fixed_child = None
         if not must_prune_fixed:
@@ -441,6 +513,121 @@ class MSTNode(Node):
     def compute_upper_bound(self):
         real_weight, _ = self.lagrangian_solver.compute_real_weight_length()
         return real_weight
+    
+
+    # def apply_peg_test(self, incumbent_ub, max_tests=20, candidate_source="mst"):
+    #     """
+    #     Lagrangian peg test / reduced-cost fixing.
+
+    #     If forcing e IN gives LB > incumbent, then e must be OUT.
+    #     If forcing e OUT gives LB > incumbent, then e must be IN.
+    #     """
+
+    #     if incumbent_ub == float("inf"):
+    #         return 0
+
+    #     solver = self.lagrangian_solver
+    #     fixed_new = set(self.fixed_edges)
+    #     excluded_new = set(self.excluded_edges)
+
+    #     # Choose candidate edges
+    #     if candidate_source == "mst":
+    #         candidates = [
+    #             tuple(sorted(e)) for e in self.mst_edges
+    #             if tuple(sorted(e)) not in fixed_new
+    #             and tuple(sorted(e)) not in excluded_new
+    #             and tuple(sorted(e)) not in self.branched_edges
+    #         ]
+    #     else:
+    #         candidates = [
+    #             tuple(sorted((u, v))) for u, v, _, _ in self.edges
+    #             if tuple(sorted((u, v))) not in fixed_new
+    #             and tuple(sorted((u, v))) not in excluded_new
+    #             and tuple(sorted((u, v))) not in self.branched_edges
+    #         ]
+
+    #     candidates = candidates[:max_tests]
+
+    #     n_fixed = 0
+
+    #     for e in candidates:
+    #         e = tuple(sorted(e))
+
+    #         # Test e fixed IN
+    #         with self._sb_pool.borrow() as probe:
+    #             probe.reset(
+    #                 fixed_edges=fixed_new | {e},
+    #                 excluded_edges=excluded_new,
+    #                 initial_lambda=solver.best_lambda,
+    #                 step_size=solver.step_size,
+    #                 max_iter=solver.max_iter,
+    #                 use_cover_cuts=self.use_cover_cuts,
+    #                 cut_frequency=self.cut_frequency,
+    #                 use_bisection=self.use_bisection,
+    #                 verbose=False,
+    #             )
+
+    #             lb_in, _, _ = probe.solve(depth=self.depth)
+
+    #         if lb_in > incumbent_ub:
+    #             excluded_new.add(e)
+    #             n_fixed += 1
+    #             continue
+
+    #         # Test e fixed OUT
+    #         with self._sb_pool.borrow() as probe:
+    #             probe.reset(
+    #                 fixed_edges=fixed_new,
+    #                 excluded_edges=excluded_new | {e},
+    #                 initial_lambda=solver.best_lambda,
+    #                 step_size=solver.step_size,
+    #                 max_iter=solver.max_iter,
+    #                 use_cover_cuts=self.use_cover_cuts,
+    #                 cut_frequency=self.cut_frequency,
+    #                 use_bisection=self.use_bisection,
+    #                 verbose=False,
+    #             )
+
+    #             lb_out, _, _ = probe.solve(depth=self.depth)
+
+    #         if lb_out > incumbent_ub:
+    #             fixed_new.add(e)
+    #             n_fixed += 1
+
+    #     if n_fixed == 0:
+    #         return 0
+
+    #     # Update the node's fixed/excluded sets
+    #     self.fixed_edges = fixed_new
+    #     self.excluded_edges = excluded_new
+
+    #     # Re-solve the current node with the new fixings
+    #     solver.reset(
+    #         fixed_edges=self.fixed_edges,
+    #         excluded_edges=self.excluded_edges,
+    #         initial_lambda=solver.best_lambda,
+    #         step_size=solver.step_size,
+    #         max_iter=solver.max_iter,
+    #         use_cover_cuts=self.use_cover_cuts,
+    #         cut_frequency=self.cut_frequency,
+    #         use_bisection=self.use_bisection,
+    #         verbose=self.verbose,
+    #     )
+
+    #     self.local_lower_bound, self.best_upper_bound, self.new_cuts = solver.solve(
+    #         inherited_cuts=[
+    #             (set(tuple(sorted((u, v))) for u, v in cut), rhs)
+    #             for cut, rhs in self.active_cuts
+    #         ],
+    #         inherited_multipliers=self.cut_multipliers,
+    #         depth=self.depth,
+    #     )
+
+    #     raw_edges = solver.last_mst_edges or []
+    #     self.mst_edges = [tuple(sorted((u, v))) for u, v in raw_edges]
+    #     self.actual_cost, _ = solver.compute_real_weight_length()
+
+    #     return n_fixed
 
     def get_branching_candidates(self):
 
@@ -1560,6 +1747,51 @@ class MSTNode(Node):
         new_branched_edges = self.branched_edges | child_fixed | child_excl
 
         # --- Project cuts exactly like create_children ---
+        # def _project_for_child(fixed_child, excluded_child):
+        #     infeasible = False
+        #     proj = {}
+
+        #     for old_i, (S, rhs) in enumerate(all_cuts):
+        #         S_known = {e for e in S if e in known_edges}
+        #         S_fixed = S_known & fixed_child
+        #         S_free  = S_known - fixed_child - excluded_child
+
+        #         rhs_prime = rhs - len(S_fixed)
+        #         if rhs_prime < 0:
+        #             infeasible = True
+        #             break
+        #         if len(S_free) <= rhs_prime:
+        #             continue
+
+        #         key = frozenset(S_free)
+        #         mu_old = float(current_multipliers.get(old_i, 0.0))
+
+        #         prev = proj.get(key)
+        #         if (prev is None or
+        #             rhs_prime < prev[0] or
+        #             (rhs_prime == prev[0] and abs(mu_old) > abs(prev[1]))):
+        #             proj[key] = (rhs_prime, mu_old)
+
+        #     if infeasible:
+        #         return None, None, True
+
+        #     # sort like create_children
+        #     def _key(sfree, rhs_, mu_):
+        #         return (-len(sfree), rhs_, tuple(sorted(sfree)))
+
+        #     ordered = sorted(
+        #         ((sfree, rhs_mu[0], rhs_mu[1]) for sfree, rhs_mu in proj.items()),
+        #         key=lambda x: _key(x[0], x[1], x[2])
+        #     )
+
+        #     if len(ordered) > max_child_cuts:
+        #         ordered = ordered[:max_child_cuts]
+
+        #     kept_cuts = [(set(sfree), rhs) for (sfree, rhs, mu) in ordered]
+        #     kept_mu   = {i: float(mu) for i, (_, _, mu) in enumerate(ordered)}
+
+        #     return kept_cuts, kept_mu, False
+        T_parent = set(self.mst_edges or [])
         def _project_for_child(fixed_child, excluded_child):
             infeasible = False
             proj = {}
@@ -1576,32 +1808,36 @@ class MSTNode(Node):
                 if len(S_free) <= rhs_prime:
                     continue
 
+                lhs_est = len(T_parent & S_free)
+                viol_est = lhs_est - rhs_prime
                 key = frozenset(S_free)
                 mu_old = float(current_multipliers.get(old_i, 0.0))
 
                 prev = proj.get(key)
-                if (prev is None or
-                    rhs_prime < prev[0] or
-                    (rhs_prime == prev[0] and abs(mu_old) > abs(prev[1]))):
-                    proj[key] = (rhs_prime, mu_old)
+                if (
+                    prev is None
+                    or rhs_prime < prev["rhs"]
+                    or (rhs_prime == prev["rhs"] and viol_est > prev["viol"])
+                ):
+                    proj[key] = {
+                        "rhs": rhs_prime,
+                        "mu": mu_old,
+                        "viol": viol_est,
+                    }
 
             if infeasible:
                 return None, None, True
 
-            # sort like create_children
-            def _key(sfree, rhs_, mu_):
-                return (-len(sfree), rhs_, tuple(sorted(sfree)))
-
             ordered = sorted(
-                ((sfree, rhs_mu[0], rhs_mu[1]) for sfree, rhs_mu in proj.items()),
-                key=lambda x: _key(x[0], x[1], x[2])
+                proj.items(),
+                key=lambda kv: (-kv[1]["viol"], len(kv[0]), kv[1]["rhs"], tuple(sorted(kv[0])))
             )
 
             if len(ordered) > max_child_cuts:
                 ordered = ordered[:max_child_cuts]
 
-            kept_cuts = [(set(sfree), rhs) for (sfree, rhs, mu) in ordered]
-            kept_mu   = {i: float(mu) for i, (_, _, mu) in enumerate(ordered)}
+            kept_cuts = [(set(sfree), info["rhs"]) for sfree, info in ordered]
+            kept_mu   = {i: float(info["mu"]) for i, (_, info) in enumerate(ordered)}
 
             return kept_cuts, kept_mu, False
 
