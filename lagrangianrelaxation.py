@@ -941,7 +941,7 @@ class LagrangianMST:
             gamma_base         = getattr(self, "gamma_base", 0.1)
 
             # μ update parameters
-            gamma_mu         = getattr(self, "gamma_mu", 0.02)
+            gamma_mu         = getattr(self, "gamma_mu", 0.30)
             mu_increment_cap = getattr(self, "mu_increment_cap", 1.0)
             eps              = 1e-12
 
@@ -1263,7 +1263,6 @@ class LagrangianMST:
                         self.best_cost        = mst_cost
                         self.best_cut_multipliers_for_best_bound = self.best_cut_multipliers.copy()
 
-                
                 # 4) Subgradients
                 knapsack_subgradient = float(mst_length - self.budget)
                 # print("fff", mst_length)
@@ -1299,152 +1298,55 @@ class LagrangianMST:
                     cut_g_signed = []
                     cut_g_pos = []
 
-                # ------------------------------------------------------------
-                # Separate step sizes for λ and μ
-                # λ reacts only to the knapsack violation.
-                # μ reacts only to cut violations.
-                # ------------------------------------------------------------
-                gap = 0.0
-                if self.best_upper_bound < float('inf'):
-                    gap = max(0.0, self.best_upper_bound - lagrangian_bound)
 
-                # ----- λ step size: ONLY knapsack subgradient -----
-                norm_sq_lambda = float(knapsack_subgradient) ** 2
+                norm_sq = knapsack_subgradient ** 2
+                for g in cut_subgradients:
+                    norm_sq += float(g) ** 2
 
-                if polyak_enabled and self.best_upper_bound < float('inf') and norm_sq_lambda > 0.0:
-                    alpha_lambda = gamma_base * gap / (norm_sq_lambda + eps)
+                # Polyak step size
+                if polyak_enabled and self.best_upper_bound < float('inf') and norm_sq > 0.0:
+                    gap   = max(0.0, self.best_upper_bound - lagrangian_bound)
+                    alpha = gamma_base * gap / (norm_sq + eps)
                 else:
-                    alpha_lambda = getattr(self, "step_size", 0.001)
+                    alpha = getattr(self, "step_size", 0.001)
 
                 # λ update with momentum, then clamp
                 v_prev = getattr(self, "_v_lambda", 0.0)
                 v_new  = self.momentum_beta * v_prev + (1.0 - self.momentum_beta) * knapsack_subgradient
                 self._v_lambda = v_new
-                self.lmbda     = self.lmbda + alpha_lambda * v_new
+                self.lmbda     = self.lmbda + alpha * v_new
+                # print("ooo", alpha)
 
                 if self.lmbda < 0.0:
                     self.lmbda = 0.0
                 if self.lmbda > 1e4:
                     self.lmbda = 1e4
 
-                # ----- μ step size: ONLY cut subgradients -----
-                norm_sq_mu = 0.0
-                for g in cut_g_pos:
-                    gg = float(g)
-                    if gg > 0.0:
-                        norm_sq_mu += gg * gg
-
-                if polyak_enabled and self.best_upper_bound < float('inf') and norm_sq_mu > 0.0:
-                    alpha_mu = gamma_mu * gap / (norm_sq_mu + eps)
-                else:
-                    alpha_mu = 0.0
-
-                # μ updates
-                if mu_dynamic_here and len(cut_g_pos) > 0 and alpha_mu > 0.0:
+                # μ updates: projected subgradient for constraints sum_{e in S} x_e <= rhs_eff
+                if mu_dynamic_here and len(cut_g_pos) > 0:
                     for i, g in enumerate(cut_g_pos):
                         g = float(g)
                         if g <= 0.0:
                             continue
 
-                        delta = alpha_mu * g
+                        delta = gamma_mu * alpha * g
 
+                        # cap only positive increment
                         if mu_increment_cap is not None:
                             delta = min(mu_increment_cap, delta)
 
                         mu_old = float(self.best_cut_multipliers.get(i, 0.0))
                         mu_new = mu_old + delta
 
+                        # projection + clamp
                         if mu_new > 1e4:
                             mu_new = 1e4
 
                         self.best_cut_multipliers[i] = mu_new
 
-                self.step_sizes.append(alpha_lambda)
+
+                self.step_sizes.append(alpha)
                 self.multipliers.append((self.lmbda, self.best_cut_multipliers.copy()))
-                # 4) Subgradients
-                # knapsack_subgradient = float(mst_length - self.budget)
-                # # print("fff", mst_length)
-                # # print("lala",self.lmbda)
-                # # print("wer", knapsack_subgradient)
-
-                # # Fast skip: if MST feasible and all μ are ~0, don't pay cut gradient cost
-                # all_mu_small = (not self.best_cut_multipliers) or \
-                #             (max(self.best_cut_multipliers.values()) <= dead_mu_threshold)
-
-                # if cuts_present_here and mu_dynamic_here and len(cut_edge_idx_all) > 0 and not (is_feasible and all_mu_small):
-                #     mst_mask[:] = False
-                #     for e in mst_edges:
-                #         j = self.edge_indices.get(e)
-                #         if j is not None:
-                #             mst_mask[j] = True
-
-                #     cut_g_signed = []
-                #     cut_g_pos    = []
-
-                #     for i, idxs_free in enumerate(cut_edge_idx_free):
-                #         lhs_free = int(mst_mask[idxs_free].sum()) if idxs_free.size else 0
-                #         g_i = float(lhs_free) - float(rhs_eff_vec[i])
-                #         cut_g_signed.append(g_i)
-                #         cut_g_pos.append(g_i if g_i > 0.0 else 0.0)
-
-                #         if g_i > max_cut_violation[i]:
-                #             max_cut_violation[i] = g_i
-
-                #     cut_subgradients = cut_g_pos
-                # else:
-                #     cut_subgradients = []
-                #     cut_g_signed = []
-                #     cut_g_pos = []
-
-
-                # norm_sq = knapsack_subgradient ** 2
-                # for g in cut_subgradients:
-                #     norm_sq += float(g) ** 2
-
-                # # Polyak step size
-                # if polyak_enabled and self.best_upper_bound < float('inf') and norm_sq > 0.0:
-                #     gap   = max(0.0, self.best_upper_bound - lagrangian_bound)
-                #     alpha = gamma_base * gap / (norm_sq + eps)
-                # else:
-                #     alpha = getattr(self, "step_size", 0.001)
-
-                # # λ update with momentum, then clamp
-                # v_prev = getattr(self, "_v_lambda", 0.0)
-                # v_new  = self.momentum_beta * v_prev + (1.0 - self.momentum_beta) * knapsack_subgradient
-                # self._v_lambda = v_new
-                # self.lmbda     = self.lmbda + alpha * v_new
-                # # print("ooo", alpha)
-
-                # if self.lmbda < 0.0:
-                #     self.lmbda = 0.0
-                # if self.lmbda > 1e4:
-                #     self.lmbda = 1e4
-
-                # # μ updates: projected subgradient for constraints sum_{e in S} x_e <= rhs_eff
-                # if mu_dynamic_here and len(cut_g_pos) > 0:
-                #     for i, g in enumerate(cut_g_pos):
-                #         g = float(g)
-                #         if g <= 0.0:
-                #             continue
-
-                #         delta = gamma_mu * alpha * g
-
-                #         # cap only positive increment
-                #         if mu_increment_cap is not None:
-                #             delta = min(mu_increment_cap, delta)
-
-                #         mu_old = float(self.best_cut_multipliers.get(i, 0.0))
-                #         mu_new = mu_old + delta
-
-                #         # projection + clamp
-                #         if mu_new > 1e4:
-                #             mu_new = 1e4
-
-                #         self.best_cut_multipliers[i] = mu_new
-
-
-                # self.step_sizes.append(alpha)
-                # self.multipliers.append((self.lmbda, self.best_cut_multipliers.copy()))
 
             # ------------------------------------------------------------------
             # 6) Drop "dead" cuts globally
