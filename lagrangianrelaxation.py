@@ -579,9 +579,6 @@ class LagrangianMST:
             dominated = any(dset <= cset and drhs <= rhs for dset, drhs in kept)
             if not dominated:
                 kept.append((cset, rhs))
-
-
-
         return kept[:MAX_RETURN]
 
     
@@ -1114,8 +1111,10 @@ class LagrangianMST:
             mst_mask = self._mst_mask
 
             # Decide iteration limit for this node:
-            # iter_limit = root_max_iter if is_root else max_iter
-            iter_limit = root_max_iter * 1.1 if is_root and self.use_cover_cuts else max_iter
+            if is_root:
+                iter_limit = root_max_iter * 1.1 if self.use_cover_cuts else root_max_iter
+            else:
+                iter_limit = max_iter
             # ------------------------------------------------------------------
             # 5) Subgradient iterations
             # ------------------------------------------------------------------
@@ -1152,15 +1151,10 @@ class LagrangianMST:
                             rhs_eff  = int(rhs) - len(S_set & F_in_set)
                             violation = lhs_free - rhs_eff
 
-                        #     if violation >= min_cut_violation_for_add:
-                        #         scored_loop.append((violation, S_set, rhs))
-
-                        # scored_loop.sort(reverse=True, key=lambda t: t[0])
-
                             if violation >= min_cut_violation_for_add:
-                                scored_loop.append((violation, len(S_free), rhs, S_set))
+                                scored_loop.append((violation, S_set, rhs))
 
-                        scored_loop.sort(key=lambda t: (-t[0], t[1], t[2]))
+                        scored_loop.sort(reverse=True, key=lambda t: t[0])
 
                         remaining_slots = max(0, max_active_cuts - len(self.best_cuts))
                         if remaining_slots > 0:
@@ -1171,8 +1165,7 @@ class LagrangianMST:
                         existing = {frozenset(c): rhs for (c, rhs) in self.best_cuts}
                         added_any = False
 
-                        # for violation, S, rhs in scored_loop:
-                        for violation, _, rhs, S in scored_loop:
+                        for violation, S, rhs in scored_loop:
                             fz = frozenset(S)
                             if fz in existing:
                                 continue
