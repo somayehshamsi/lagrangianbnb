@@ -1912,7 +1912,7 @@ class LagrangianMST:
             # ------------------------------------------------------------------
             # DEBUG SETTINGS
             # ------------------------------------------------------------------
-            debug_cuts = True
+            debug_cuts = False
             debug_iter_every = 1       # change to 5 or 10 if the log becomes too large
             debug_cut_max_rows = 10
 
@@ -2367,7 +2367,6 @@ class LagrangianMST:
                 if should_separate:
                     try:
                         cand_cuts_loop = self.generate_cover_cuts(mst_edges) or []
-                        print("ddd")
 
                         _dbg(
                             f"Generated candidate cuts: count={len(cand_cuts_loop)}",
