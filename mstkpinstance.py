@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 
 MAX_EDGE_WEIGHT = 200
 MAX_EDGE_LENGTH = 200
-CONVEX_BUDGET_FACTOR = 0.5
+CONVEX_BUDGET_FACTOR = 0.4
 
 
 
