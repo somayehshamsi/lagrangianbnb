@@ -5,8 +5,8 @@ import matplotlib.pyplot as plt
 
 MAX_EDGE_WEIGHT = 200
 MAX_EDGE_LENGTH = 200
-CONVEX_BUDGET_FACTOR = 0.7
-
+# CONVEX_BUDGET_FACTOR = 0.8
+DEFAULT_BETA = 0.8
 
 
 
@@ -21,12 +21,15 @@ class MSTKPInstance:
     - One with the length of the edges as weights, called Tl
     The budget is taken a weighted average between the weight of Tw and the weight (not length) of Tl.
     """
-    def __init__(self, num_nodes, density):
+    def __init__(self, num_nodes, density, beta=None):
         self.num_nodes = num_nodes
         self.budget = None
         self.edges = []
 
         self.density = density
+        self.beta = DEFAULT_BETA if beta is None else float(beta)
+
+        assert 0 <= self.beta <= 1, "beta must be between 0 and 1"
         self.graph = None
         self.tw = None
         self.tl = None
@@ -72,8 +75,11 @@ class MSTKPInstance:
         total_tw_weight = sum(d["length"] for _, _, d in self.tw.edges(data=True))
         total_tl_weight = sum(d["length"] for _, _, d in self.tl.edges(data=True))
 
-        assert 0 <= CONVEX_BUDGET_FACTOR <= 1
-        self.budget = int(CONVEX_BUDGET_FACTOR * total_tw_weight + (1 - CONVEX_BUDGET_FACTOR) * total_tl_weight)
+        # assert 0 <= CONVEX_BUDGET_FACTOR <= 1
+        # self.budget = int(CONVEX_BUDGET_FACTOR * total_tw_weight + (1 - CONVEX_BUDGET_FACTOR) * total_tl_weight)
+        beta = self.beta
+        self.budget = int(beta * total_tw_weight + (1 - beta) * total_tl_weight)
+
         # self.budget = self.num_nodes * 20 -20
         # self.budget=900]
         assert total_tl_weight <= self.budget <= total_tw_weight

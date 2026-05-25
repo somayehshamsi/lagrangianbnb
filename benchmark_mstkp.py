@@ -76,8 +76,12 @@ def generate_instances(num_instances, num_nodes, density, seed):
     instances = []
     for i in range(num_instances):
         instance_seed = random.randint(0, 1000000)
+        # Generate beta deterministically from this instance_seed.
+        # This will be the same every time you rerun with the same main seed.
+        beta_rng = random.Random(instance_seed + 999983)
+        beta = beta_rng.uniform(0.3, 0.7)
         random.seed(instance_seed)
-        instance = MSTKPInstance(num_nodes, density)
+        instance = MSTKPInstance(num_nodes, density, beta=beta)
         instances.append((instance, instance_seed))
         logger.info(f"Generated instance {i+1}/{num_instances} with seed {instance_seed}")
     return instances
@@ -204,6 +208,7 @@ def run_experiment(instance, seed, config, args):
         "instance_seed": seed,
         "num_nodes": mstkp_instance.num_nodes,
         "density": mstkp_instance.density,
+        "beta": getattr(mstkp_instance, "beta", None),
         "budget": mstkp_instance.budget,
         "branching_rule": branching_rule,
         "use_2opt": use_2opt,

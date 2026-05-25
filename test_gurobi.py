@@ -3102,20 +3102,22 @@ STATUS_MAP = {
 
 METHODS = [
     "scf",
-    "mcf",
-    "tree_cutset",
-    "arborescence_cutset",
-    "cycle_elimination",
-    "k_arborescence",
+    # "mcf",
+    # "tree_cutset",
+    # "arborescence_cutset",
+    "cycle_elimination"
+    # ,
+    # "k_arborescence",
 ]
 
 METHOD_LABELS = {
     "scf": "Single-Commodity Flow",
-    "mcf": "Multi-Commodity Flow",
-    "tree_cutset": "Tree Cut-Set",
-    "arborescence_cutset": "Arborescence Cut-Set",
-    "cycle_elimination": "Cycle Elimination",
-    "k_arborescence": "k-Arborescence Extended",
+    # "mcf": "Multi-Commodity Flow",
+    # "tree_cutset": "Tree Cut-Set",
+    # "arborescence_cutset": "Arborescence Cut-Set",
+    "cycle_elimination": "Cycle Elimination"
+    # ,
+    # "k_arborescence": "k-Arborescence Extended",
 }
 
 
