@@ -3183,8 +3183,11 @@ def generate_instances(num_instances, num_nodes, density, seed, output_dir):
     for i in range(num_instances):
         start_gen = time.time()
         instance_seed = random.randint(0, 1000000)
+                # Same beta rule as benchmark_mstkp.py
+        beta_rng = random.Random(instance_seed + 999983)
+        beta = beta_rng.uniform(0.3, 0.7)
         random.seed(instance_seed)
-        instance = MSTKPInstance(num_nodes, density)
+        instance = MSTKPInstance(num_nodes, density, beta=beta)
         gen_time = time.time() - start_gen
         instances.append((instance, instance_seed, gen_time))
         logger.info(f"Generated instance {i+1}/{num_instances} with seed {instance_seed}")
@@ -3279,6 +3282,7 @@ def early_time_limit_result(instance, seed, start_total):
         "instance_seed": seed,
         "num_nodes": instance.num_nodes,
         "density": instance.density,
+        "beta": getattr(instance, "beta", None),
         "budget": instance.budget,
         "solve_time": total_time,
         "opt_time": 0.0,
@@ -3318,6 +3322,7 @@ def collect_result(model, x, instance, seed, start_total, opt_time):
         "num_nodes": instance.num_nodes,
         "density": instance.density,
         "budget": instance.budget,
+        "beta": getattr(instance, "beta", None),
         "solve_time": solve_time,
         "opt_time": opt_time,
         "nodes_explored": nodes_explored,
@@ -3776,6 +3781,7 @@ def main():
                     "instance_seed": instance_seed,
                     "num_nodes": instance.num_nodes,
                     "density": instance.density,
+                    "beta": getattr(instance, "beta", None),
                     "budget": instance.budget,
                     "solve_time": float("nan"),
                     "opt_time": float("nan"),
