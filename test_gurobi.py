@@ -3102,24 +3102,24 @@ STATUS_MAP = {
 
 METHODS = [
     # "scf",
-    "mcf",
+    # "mcf",
     # "tree_cutset",
     # "arborescence_cutset"
     # ,
     # "cycle_elimination"
     # ,
-    # "k_arborescence",
+    "k_arborescence",
 ]
 
 METHOD_LABELS = {
     # "scf": "Single-Commodity Flow",
-    "mcf": "Multi-Commodity Flow",
+    # "mcf": "Multi-Commodity Flow",
     # "tree_cutset": "Tree Cut-Set",
     # "arborescence_cutset": "Arborescence Cut-Set"
     # ,
     # "cycle_elimination": "Cycle Elimination"
     # ,
-    # "k_arborescence": "k-Arborescence Extended",
+    "k_arborescence": "k-Arborescence Extended",
 }
 
 
@@ -3678,13 +3678,13 @@ def solve_k_arborescence(instance, seed, time_limit_s, verbose=False):
 
 SOLVERS = {
     # "scf": solve_scf,
-    "mcf": solve_mcf,
+    # "mcf": solve_mcf,
     # "tree_cutset": solve_tree_cutset,
     # "arborescence_cutset": solve_arborescence_cutset
     # ,
     # "cycle_elimination": solve_cycle_elimination
     # ,
-    # "k_arborescence": solve_k_arborescence,
+    "k_arborescence": solve_k_arborescence,
 }
 
 
