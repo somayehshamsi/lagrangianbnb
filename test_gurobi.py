@@ -3102,24 +3102,26 @@ STATUS_MAP = {
 
 METHODS = [
     # "scf",
-    # "mcf",
-    "tree_cutset",
-    "arborescence_cutset"
+    # "mcf"
     # ,
-    # "cycle_elimination"
+    # "tree_cutset",
+    "tree_multicut"
     # ,
-    # "k_arborescence",
+    # "arborescence_cutset",
+    # "cycle_elimination",
+    # "k_arborescence"
 ]
 
 METHOD_LABELS = {
     # "scf": "Single-Commodity Flow",
-    # "mcf": "Multi-Commodity Flow",
-    "tree_cutset": "Tree Cut-Set",
-    "arborescence_cutset": "Arborescence Cut-Set"
+    # "mcf": "Multi-Commodity Flow"
     # ,
-    # "cycle_elimination": "Cycle Elimination"
+    # "tree_cutset": "Tree Cut-Set",
+    "tree_multicut": "Tree Cut-Set + Multicut"
     # ,
-    # "k_arborescence": "k-Arborescence Extended",
+    # "arborescence_cutset": "Arborescence Cut-Set",
+    # "cycle_elimination": "Cycle Elimination",
+    # "k_arborescence": "k-Arborescence Extended"
 }
 
 
@@ -3537,6 +3539,72 @@ def solve_tree_cutset(instance, seed, time_limit_s, verbose=False):
     opt_time = time.time() - start_opt
     return collect_result(model, x, instance, seed, start_total, opt_time)
 
+# ============================================================
+# 3b. Tree cut-set formulation with multicut lazy constraints
+# ============================================================
+def tree_multicut_lazy_callback(model, where):
+    global_time_callback(model, where)
+    if where != GRB.Callback.MIPSOL:
+        return
+
+    x_vals = model.cbGetSolution(model._x)
+    selected_edges = [e for e in model._E if x_vals[e] > 0.5]
+    components = undirected_components(model._V, selected_edges)
+
+    # If the incumbent is connected, no cut is needed.
+    if len(components) <= 1:
+        return
+
+    # Standard component cuts: one cut for each component not containing the root.
+    for comp in components:
+        if model._root in comp or len(comp) == model._n:
+            continue
+        S = set(comp)
+        cut_edges = [e for e in model._E if (e[0] in S) ^ (e[1] in S)]
+        if cut_edges:
+            model.cbLazy(gp.quicksum(model._x[e] for e in cut_edges) >= 1)
+
+    # Multicut over the incumbent component partition.
+    # If the selected graph has q components, at least q-1 edges must connect
+    # different components in any spanning tree.
+    comp_id = {}
+    for idx, comp in enumerate(components):
+        for v in comp:
+            comp_id[v] = idx
+
+    cross_edges = [
+        e for e in model._E
+        if comp_id[e[0]] != comp_id[e[1]]
+    ]
+
+    q = len(components)
+    if cross_edges:
+        model.cbLazy(gp.quicksum(model._x[e] for e in cross_edges) >= q - 1)
+
+
+def solve_tree_multicut(instance, seed, time_limit_s, verbose=False):
+    start_total = time.time()
+    V, E, A, c, w_knap, B, root, outgoing, incoming = prepare_data(instance)
+
+    if time.time() - start_total >= time_limit_s:
+        return early_time_limit_result(instance, seed, start_total)
+
+    model = make_model("MST_Knapsack_TreeCutSet_Multicut", verbose=verbose, lazy=True)
+    x = model.addVars(E, vtype=GRB.BINARY, name="x")
+    add_common_constraints(model, V, E, c, w_knap, B, x)
+
+    model._x = x
+    model._V = V
+    model._E = E
+    model._n = len(V)
+    model._root = root
+    model._start_total = start_total
+    model._time_limit_s = time_limit_s
+
+    start_opt = time.time()
+    model.optimize(tree_multicut_lazy_callback)
+    opt_time = time.time() - start_opt
+    return collect_result(model, x, instance, seed, start_total, opt_time)
 
 # ============================================================
 # 4. Arborescence cut-set formulation
@@ -3678,13 +3746,14 @@ def solve_k_arborescence(instance, seed, time_limit_s, verbose=False):
 
 SOLVERS = {
     # "scf": solve_scf,
-    # "mcf": solve_mcf,
-    "tree_cutset": solve_tree_cutset,
-    "arborescence_cutset": solve_arborescence_cutset
+    # "mcf": solve_mcf
     # ,
-    # "cycle_elimination": solve_cycle_elimination
+    # "tree_cutset": solve_tree_cutset,
+    "tree_multicut": solve_tree_multicut
     # ,
-    # "k_arborescence": solve_k_arborescence,
+    # "arborescence_cutset": solve_arborescence_cutset,
+    # "cycle_elimination": solve_cycle_elimination,
+    # "k_arborescence": solve_k_arborescence
 }
 
 
