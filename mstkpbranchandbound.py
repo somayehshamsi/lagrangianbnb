@@ -652,6 +652,7 @@ class MSTNode(Node):
                 ]
             else:  # sb_fractional
                 # shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
+                normalized_edge_weights = None
                 shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
                 if shor_primal_solution is None:
                     # No fractional info available -> fall back to MST edges
@@ -693,7 +694,11 @@ class MSTNode(Node):
             MAX_SB_CANDIDATES = 3
             if self.branching_rule == "sb_fractional" and normalized_edge_weights is not None:
                 candidate_edges.sort(
-                    key=lambda e: abs(normalized_edge_weights[e] - 0.5)
+                    key=lambda e: (
+                        abs(normalized_edge_weights[e] - 0.5)
+                        if e in normalized_edge_weights
+                        else float("inf")
+                    )
                 )
             candidate_edges = candidate_edges[:MAX_SB_CANDIDATES]
             # Collect edges that lead to pruning
