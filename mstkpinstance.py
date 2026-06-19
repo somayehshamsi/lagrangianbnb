@@ -132,7 +132,7 @@ DEFAULT_BETA = 0.6515927038133658
 #   >0   -> positive correlation (cheap edges tend to be short): harder.
 #   <0   -> negative correlation (cheap edges tend to be long): usually easier.
 # Set this to 0.8 or -0.8 for correlated runs, then back to 0.0.
-DEFAULT_CORR = -0.5
+DEFAULT_CORR = -0.8
 
 
 class MSTKPInstance:

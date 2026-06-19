@@ -6638,6 +6638,9 @@
 #                 swaps_done += 1
 
 #         return cur_w, cur_len, list(tree_set)
+
+
+
 import networkx as nx
 import numpy as np
 from time import time
@@ -10028,6 +10031,15 @@ class LagrangianMST:
         # and finds an equal-or-better tree, because it targets the exact
         # breakpoint instead of sampling near it.
         best = (w_hi, l_hi, e_hi)              # feasible fallback (min-length)
+
+        # `repair_tight` controls incumbent quality. Default True = the strong
+        # near-optimal incumbent (few B&B nodes). Set False to return only a
+        # VALID but looser feasible tree (the min-length tree), so B&B must
+        # branch to close the gap -> larger, more informative node counts for
+        # benchmarking. Either way the solve still reaches optimality; this only
+        # changes how much of the work B&B does vs the primal heuristic.
+        if not getattr(self, "repair_tight", True):
+            return best[0], best[1], best[2]
 
         lo, hi = 0.0, 1e9                       # lo: over budget, hi: feasible
         for _ in range(getattr(self, "budget_repair_bisect_iters", 50)):

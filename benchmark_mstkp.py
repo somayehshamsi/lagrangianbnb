@@ -1,5 +1,5 @@
 
-# #######################################
+# # #######################################
 # import os
 # import random
 # import argparse
@@ -698,7 +698,7 @@
 
 # if __name__ == "__main__":
 #     main()
-# ####################################
+####################################
 
 
 # #####################################
@@ -1510,7 +1510,6 @@
 #     main()
 # ###################################
 #######################################
-#######################################
 import os
 import random
 import argparse
@@ -1585,19 +1584,19 @@ def _negative_corr_settings(instance, base_inherit_lambda, base_inherit_step_siz
 
     # Scale effort with how negative the correlation is.
     strength = min(1.0, abs(float(corr)))
-    max_iter = int(round(10 + 10 * strength))  # ~20..60
+    max_iter = int(round(5 + 10 * strength))  # ~20..60
 
     return {
-        "initial_lambda": warm,
+        "initial_lambda": 0.05,
         "max_iter": max_iter,
         # Inheritance is the cheapest big win in the hard regime; force it on.
         "inherit_lambda": True,
-        "inherit_step_size": True,
+        "inherit_step_size": False,
         "solver_attrs": {
             # Widen movement so the extra iterations actually reach large lambda*.
-            "max_lambda_delta": 0.5,
+            "max_lambda_delta": 0.02,
             "fallback_alpha": 1e-4,
-            "gamma_base": 0.10,
+            "gamma_base": 0.05,
             # Solve the root harder than a child.
             "root_max_iter": max_iter * 2,
             # Construct a feasible incumbent even when the Lagrangian MST is
@@ -1606,7 +1605,7 @@ def _negative_corr_settings(instance, base_inherit_lambda, base_inherit_step_siz
             # Depth decay: children inherit lambda (near-optimal), so they only
             # refine. Cut per-node iterations geometrically with depth, floored.
             "child_iter_decay": 0.7,
-            "child_min_iter": 6,
+            "child_min_iter": 5,
             # Vectorized (numpy.argsort) MST on the hot path; same result,
             # much faster when lambda changes every iteration at large m.
             "use_fast_kruskal": True,
@@ -2093,17 +2092,17 @@ def main():
             "inherit-step-size": False,
             "inherit_lambda": True
         }
-        # ,
+        ,
 
-        # {
-        #     "branching_rule": "hybrid_strong_fractional",
-        #     "use_bisection": False,
-        #     "use_2opt": False,
-        #     "use_shooting": False,
-        #     "cover_cuts": True,
-        #     "inherit-step-size": False,
-        #     "inherit_lambda": True
-        # }
+        {
+            "branching_rule": "hybrid_strong_fractional",
+            "use_bisection": False,
+            "use_2opt": False,
+            "use_shooting": False,
+            "cover_cuts": True,
+            "inherit-step-size": False,
+            "inherit_lambda": True
+        }
 
         # ,
         # {
@@ -2321,4 +2320,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-####################################
+##################################

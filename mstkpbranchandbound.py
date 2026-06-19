@@ -6489,3 +6489,4 @@ class MSTNode(Node):
         if self.verbose:
             print(f"Slackness-based f={f:.2f} for edge {edge}")
         return max(0.01, min(0.99, f))  # Clamp away from 0/1 to avoid div-by-zero
+    #this version
