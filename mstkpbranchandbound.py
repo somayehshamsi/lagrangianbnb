@@ -4377,7 +4377,7 @@ class MSTNode(Node):
                  node_cut_frequency=10, parent_cover_cuts=None, parent_cover_multipliers=None,
                  use_bisection=False, max_iter=5, verbose=False, depth=0,
                  pseudocosts_up=None, pseudocosts_down=None, counts_up=None, counts_down=None,
-                 reliability_eta=5, lookahead_lambda=4, solver_overrides=None):
+                 reliability_eta=3, lookahead_lambda=4, solver_overrides=None):
         if depth == 0:
             MSTNode.global_edges = [(min(u, v), max(u, v), w, l) for u, v, w, l in edges]
             MSTNode.global_graph = nx.Graph()
