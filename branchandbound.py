@@ -722,6 +722,7 @@
 
 
 
+
 import heapq
 import networkx as nx
 import math
@@ -942,12 +943,20 @@ class BranchAndBound:
             writer.writerow(headers)
 
     def _peek_min_live_lb(self):
-        """Return the smallest lower bound among live nodes without mutating the heap."""
-        # Works for (priority, count, node) tuples with a 'deleted' set
+        """Smallest lower bound among live nodes, without mutating the heap.
+
+        heap[0] is the minimum only while it is undeleted; once lazily deleted
+        entries are present the array order is not sorted, so returning the
+        first undeleted entry can overstate the bound.  Scan them all.
+        """
+        deleted = getattr(self.priority_queue, "deleted", set())
+        best = float("inf")
         for priority, count, node in getattr(self.priority_queue, "heap", []):
-            if node not in getattr(self.priority_queue, "deleted", set()):
-                return float(priority)
-        return float("inf")
+            if node not in deleted:
+                p = float(priority)
+                if p < best:
+                    best = p
+        return best
     def _log_node(self, node_id, node, branched_variable, reason, effective_upper_bound):
         duality_gap = effective_upper_bound - node.local_lower_bound if effective_upper_bound < float("inf") else float("inf")
         fixed_edges = str(list(node.fixed_edges)) if hasattr(node, 'fixed_edges') else "[]"
@@ -1289,22 +1298,10 @@ class BranchAndBound:
                 _release_solver(node)
 
 
-        valid_pruned_bounds = [b for b in self.pruned_lower_bounds if not math.isnan(b) and not math.isinf(b)]
-
-        if valid_pruned_bounds:
-            min_pruned_lower_bound = min(valid_pruned_bounds)
-            self.final_duality_gap = (
-                self.best_upper_bound - min_pruned_lower_bound if self.best_upper_bound < float("inf") else float("inf")
-            )
-        elif self.count_lower_bounds > 0:
-            avg_lower_bound = self.sum_lower_bounds / self.count_lower_bounds
-            self.final_duality_gap = (
-                self.best_upper_bound - avg_lower_bound if self.best_upper_bound < float("inf") else float("inf")
-            )
-        else:
-            self.final_duality_gap = float("inf")
-            if self.verbose:
-                print("Warning: No valid lower bounds available for final duality gap")
+        # (The final duality gap is computed once, further below.  An earlier
+        # block here assigned it from the pruned bounds or from an AVERAGE of
+        # node bounds -- an average is not a valid bound at all -- and was in any
+        # case overwritten before being read.)
 
         if self.timed_out:
             self._log_node(node_counter, root, branched_variable, "Timeout", self.best_upper_bound)
@@ -1330,15 +1327,34 @@ class BranchAndBound:
         if self.timed_out:
             print("Process stopped due to timeout (3600 seconds)")
 
-        live_lb = self._peek_min_live_lb()
-        if math.isinf(live_lb):
-            # Fallback to the min LB we saw among processed nodes (if tracked)
-            live_lb = getattr(self, "min_lower_bound", float("inf"))
+        # Final duality gap.
+        #
+        # A node still limits the bound only if it was never resolved: either it
+        # is still queued, or it was cut by the duality-gap tolerance, which
+        # proves nothing about what it contains.  Nodes pruned because their own
+        # lower bound already reached the incumbent ARE resolved and must not
+        # enter the bound.
+        #
+        # If nothing is left open, the search exhausted the tree and the
+        # incumbent is proven optimal, so the gap is exactly zero.  The previous
+        # version fell back to `min_lower_bound` -- the smallest bound seen at
+        # any processed node, essentially the root -- and so reported a large
+        # gap for instances it had in fact solved to optimality.
+        open_lbs = [
+            b for b in self.pruned_lower_bounds
+            if not math.isnan(b) and not math.isinf(b)
+        ]
 
-        if self.best_upper_bound < float("inf"):
-            self.final_duality_gap = max(0.0, self.best_upper_bound - live_lb)
-        else:
+        live_lb = self._peek_min_live_lb()
+        if not math.isinf(live_lb):
+            open_lbs.append(live_lb)
+
+        if self.best_upper_bound >= float("inf"):
             self.final_duality_gap = float("inf")
+        elif not open_lbs:
+            self.final_duality_gap = 0.0
+        else:
+            self.final_duality_gap = max(0.0, self.best_upper_bound - min(open_lbs))
 
         # Optional: log a final "Timeout" row to your node CSV
         if getattr(self, "timed_out", False):
