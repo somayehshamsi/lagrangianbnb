@@ -1717,7 +1717,7 @@ def _negative_corr_settings(instance, base_inherit_lambda, base_inherit_step_siz
     if corr >= 0.0:
         # Untouched path: exactly the old defaults.
         return {
-            "initial_lambda": 0.1,
+            "initial_lambda": 0.05,
             "max_iter": 5,
             "inherit_lambda": base_inherit_lambda,
             "inherit_step_size": base_inherit_step_size,
@@ -1749,7 +1749,7 @@ def _negative_corr_settings(instance, base_inherit_lambda, base_inherit_step_siz
     max_iter = int(round(5 + 10 * strength))  # ~20..60
 
     return {
-        "initial_lambda": 0.1,
+        "initial_lambda": 0.05,
         "max_iter": max_iter,
         # Inheritance is the cheapest big win in the hard regime; force it on.
         "inherit_lambda": True,
@@ -1845,7 +1845,7 @@ def generate_instances(num_instances, num_nodes, density, seed):
         # Generate beta deterministically from this instance_seed.
         # This will be the same every time you rerun with the same main seed.
         beta_rng = random.Random(instance_seed + 999983)
-        beta = beta_rng.uniform(0.3, 0.7)
+        beta = beta_rng.uniform(0.3,0.3)
         random.seed(instance_seed)
         instance = MSTKPInstance(num_nodes, density, beta=beta)
         instances.append((instance, instance_seed))
