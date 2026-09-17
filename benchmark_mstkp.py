@@ -1717,7 +1717,7 @@ def _negative_corr_settings(instance, base_inherit_lambda, base_inherit_step_siz
     if corr >= 0.0:
         # Untouched path: exactly the old defaults.
         return {
-            "initial_lambda": 0.05,
+            "initial_lambda": 0.1,
             "max_iter": 5,
             "inherit_lambda": base_inherit_lambda,
             "inherit_step_size": base_inherit_step_size,
@@ -1749,7 +1749,7 @@ def _negative_corr_settings(instance, base_inherit_lambda, base_inherit_step_siz
     max_iter = int(round(5 + 10 * strength))  # ~20..60
 
     return {
-        "initial_lambda": 0.05,
+        "initial_lambda": 0.1,
         "max_iter": max_iter,
         # Inheritance is the cheapest big win in the hard regime; force it on.
         "inherit_lambda": True,
