@@ -1717,7 +1717,7 @@ def _negative_corr_settings(instance, base_inherit_lambda, base_inherit_step_siz
     if corr >= 0.0:
         # Untouched path: exactly the old defaults.
         return {
-            "initial_lambda": 0.05,
+            "initial_lambda": 0.5,
             "max_iter": 5,
             "inherit_lambda": base_inherit_lambda,
             "inherit_step_size": base_inherit_step_size,
@@ -1749,7 +1749,7 @@ def _negative_corr_settings(instance, base_inherit_lambda, base_inherit_step_siz
     max_iter = int(round(5 + 10 * strength))  # ~20..60
 
     return {
-        "initial_lambda": 0.05,
+        "initial_lambda": 0.5,
         "max_iter": max_iter,
         # Inheritance is the cheapest big win in the hard regime; force it on.
         "inherit_lambda": True,
@@ -1845,7 +1845,7 @@ def generate_instances(num_instances, num_nodes, density, seed):
         # Generate beta deterministically from this instance_seed.
         # This will be the same every time you rerun with the same main seed.
         beta_rng = random.Random(instance_seed + 999983)
-        beta = beta_rng.uniform(0.3,0.3)
+        beta = beta_rng.uniform(0.2,0.2)
         random.seed(instance_seed)
         instance = MSTKPInstance(num_nodes, density, beta=beta)
         instances.append((instance, instance_seed))
@@ -2293,18 +2293,19 @@ def main():
             "max_active_cuts": 5,
             "inherit-step-size": False,
             "inherit_lambda": True
-        },
-             # ============ LADDER L0 : no cover cuts ============
-        {
-            "branching_rule": "hybrid_strong_fractional",
-            "use_bisection": False,
-            "use_2opt": False,
-            "use_shooting": False,
-            "cover_cuts": False,
-            "inherit-step-size": False,
-            "inherit_lambda": True
         }
-        ,
+        # ,
+        #      # ============ LADDER L0 : no cover cuts ============
+        # {
+        #     "branching_rule": "hybrid_strong_fractional",
+        #     "use_bisection": False,
+        #     "use_2opt": False,
+        #     "use_shooting": False,
+        #     "cover_cuts": False,
+        #     "inherit-step-size": False,
+        #     "inherit_lambda": True
+        # }
+        # ,
         # # ==== LADDER L1 : literature cuts, root only, one cover (RS) ======
         # {
         #     "branching_rule": "hybrid_strong_fractional",
@@ -2320,46 +2321,46 @@ def main():
         # }
         # ,
         # ===== LADDER L2 : same cuts, node-local, inherited, pool of 5 =====
-        {
-            "branching_rule": "hybrid_strong_fractional",
-            "use_bisection": False,
-            "use_2opt": False,
-            "use_shooting": False,
-            "cover_cuts": True,
-            "cut_strengthening": "literature",
-            "cut_root_only": False,
-            "max_active_cuts": 5,
-            "inherit-step-size": False,
-            "inherit_lambda": True
-        }
-        ,
-        # ======== LADDER L3 : + Lemma 1 sequential unit lifting ========
-        {
-            "branching_rule": "hybrid_strong_fractional",
-            "use_bisection": False,
-            "use_2opt": False,
-            "use_shooting": False,
-            "cover_cuts": True,
-            "cut_strengthening": "lemma1",
-            "cut_root_only": False,
-            "max_active_cuts": 5,
-            "inherit-step-size": False,
-            "inherit_lambda": True
-        }
-        ,
-        # ============ LADDER L4 : full Section 6 ============
-        {
-            "branching_rule": "hybrid_strong_fractional",
-            "use_bisection": False,
-            "use_2opt": False,
-            "use_shooting": False,
-            "cover_cuts": True,
-            "cut_strengthening": "full",
-            "cut_root_only": False,
-            "max_active_cuts": 5,
-            "inherit-step-size": False,
-            "inherit_lambda": True
-        }
+        # {
+        #     "branching_rule": "hybrid_strong_fractional",
+        #     "use_bisection": False,
+        #     "use_2opt": False,
+        #     "use_shooting": False,
+        #     "cover_cuts": True,
+        #     "cut_strengthening": "literature",
+        #     "cut_root_only": False,
+        #     "max_active_cuts": 5,
+        #     "inherit-step-size": False,
+        #     "inherit_lambda": True
+        # }
+        # ,
+        # # ======== LADDER L3 : + Lemma 1 sequential unit lifting ========
+        # {
+        #     "branching_rule": "hybrid_strong_fractional",
+        #     "use_bisection": False,
+        #     "use_2opt": False,
+        #     "use_shooting": False,
+        #     "cover_cuts": True,
+        #     "cut_strengthening": "lemma1",
+        #     "cut_root_only": False,
+        #     "max_active_cuts": 5,
+        #     "inherit-step-size": False,
+        #     "inherit_lambda": True
+        # }
+        # ,
+        # # ============ LADDER L4 : full Section 6 ============
+        # {
+        #     "branching_rule": "hybrid_strong_fractional",
+        #     "use_bisection": False,
+        #     "use_2opt": False,
+        #     "use_shooting": False,
+        #     "cover_cuts": True,
+        #     "cut_strengthening": "full",
+        #     "cut_root_only": False,
+        #     "max_active_cuts": 5,
+        #     "inherit-step-size": False,
+        #     "inherit_lambda": True
+        # }
         # {
         #     "branching_rule": "pseudocost",
         #     "use_bisection": False,
