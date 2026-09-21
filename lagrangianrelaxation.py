@@ -7144,8 +7144,7 @@
 #         return cur_w, cur_len, list(tree_set)
 
 
-
-#gap
+#after cutting fastre
 
 
 import networkx as nx
@@ -7158,34 +7157,6 @@ import heapq
 import hashlib
 import bisect
 
-
-# Which strengthening `LagrangianMST.generate_cover_cuts` applies to the seed
-# cover.  Set it as `solver.cut_strengthening = "..."`, or via MSTNode's
-# `solver_overrides` so every child node inherits it.
-#
-#   "literature"  The cover read off the infeasible Lagrangian tree [39],
-#                 strengthened only by the static dominance-based extension of
-#                 Agra et al. [5, 6]: admissible edges at least as long as the
-#                 longest cover edge that close a cycle with the cover.  Support
-#                 is only enlarged, never contracted, and the threshold is fixed
-#                 once from the seed.
-#
-#   "lemma1"      The seed cover lifted by the sequential unit-lifting rule of
-#                 Lemma 1, whose threshold is re-evaluated as edges enter.  No
-#                 contraction and no completion-aware lifting.
-#
-#   "full"        Section 6 complete: Lemma 1 on the residual cover, plus the
-#                 deletion-based contraction of Section 6.3 under the
-#                 tree-completion certificate and the completion-aware lifting
-#                 of Lemma 2.  The default.
-#
-# Everything downstream is shared -- reduction under the node fixings, violation
-# ranking, the active-pool cap, dualization and the joint multiplier updates --
-# so two runs differ only in how the seed cover is strengthened.  The remaining
-# rungs of the attribution ladder come from existing attributes: `max_cut_depth`
-# = 0 restricts separation to the root and `max_active_cuts` = 1 keeps a single
-# cover live, together reproducing the root-level, one-cover-at-a-time setting
-# of [39]; `use_cover_cuts` = False is the no-cuts rung.
 CUT_STRENGTHENINGS = ("literature", "lemma1", "full")
 
 
@@ -7198,9 +7169,14 @@ class UnionFind:
         self.size = [1] * n
     
     def find(self, u):
-        if self.parent[u] != u:
-            self.parent[u] = self.find(self.parent[u])
-        return self.parent[u]
+        # Iterative with path halving.  This is the single hottest function in
+        # the solver -- 79M calls in one n=200 run -- and the recursive form
+        # paid a Python frame per level of the tree.
+        parent = self.parent
+        while parent[u] != u:
+            parent[u] = parent[parent[u]]
+            u = parent[u]
+        return u
     
     def union(self, u, v):
         pu, pv = self.find(u), self.find(v)
@@ -7249,6 +7225,11 @@ class LagrangianMST:
     cuts_infeasible = 0    # nodes proved infeasible by rhs_eff < 0
     cut_nodes = 0          # nodes where separation actually ran
 
+    # Single slot for the node-invariant separation scaffold; see
+    # generate_cover_cuts.  Held on the class so it is not retained per open
+    # node, and dropped when the instance changes.
+    _sep_cache = None
+
 
     def __init__(self, edges, num_nodes, budget, fixed_edges=None, excluded_edges=None,
                  initial_lambda=0.05, step_size=0.001, max_iter=10, 
@@ -7264,6 +7245,7 @@ class LagrangianMST:
         edge_key = id(edges)
         if getattr(LagrangianMST, "_edge_key", None) != edge_key:
             LagrangianMST._edge_key = edge_key
+            LagrangianMST._sep_cache = None
             edge_list = [tuple(sorted((u, v))) for u, v, _, _ in edges]
             LagrangianMST._edge_list = edge_list
             LagrangianMST._edge_indices = {edge: idx for idx, edge in enumerate(edge_list)}
@@ -7433,361 +7415,7 @@ class LagrangianMST:
         self._invalidate_weight_cache()
         if hasattr(self, 'mst_cache'):
             self.mst_cache = LRUCache(capacity=5)
-    # def generate_cover_cuts(self, mst_edges):  
-    #     """
-    #     Stronger cover cuts (tightened):
-    #     - Residualization: A, B' (clamped), fixed/excluded respected
-    #     - Seed residual-minimal cover from T^λ ∩ A
-    #     - Certificate shrinking using optimistic U(S) with component-based k, and exact Kruskal fallback
-    #     - Inclusion-minimal S* shrinking under the certificate (THIS was missing)
-    #     - Micro-seed from top-L heaviest admissible edges
-    #     - Stronger safe lifting for residual-minimal covers
-    #     - Strict effective-RHS pruning + current-violation checks
-    #     - Dedup with dominance & subset-dominance
-    #     """
-    #     if not mst_edges:
-    #         return []
-
-    #     EPS = 1e-12
-    #     L_MICRO = 3
-    #     MAX_RETURN = 10
-
-    #     # --- normalize edges ---
-    #     def norm(e):
-    #         u, v = e
-    #         return (u, v) if u <= v else (v, u)
-
-    #     mst_norm = [norm(e) for e in mst_edges]
-    #     mst_set = set(mst_norm)
-
-    #     # --- accessors / data ---
-    #     edge_attr = self.edge_attributes  # edge -> (w, ℓ)
-    #     def get_len(e): return edge_attr[e][1]
-
-    #     fixed = set(getattr(self, "fixed_edges", set()))
-    #     excluded = set(getattr(self, "excluded_edges", set()))
-    #     budget = self.budget
-
-    #     # Residual budget
-    #     L_fix = sum(get_len(e) for e in fixed if e in edge_attr)
-    #     Bp = budget - L_fix
-
-    #     # If fixes already exceed the budget, cuts may still be useful, but be careful with rhs_eff.
-    #     # We will still attempt separation.
-
-    #     # Admissible edges A
-    #     A = {e for e in getattr(self, "edge_list", []) if e not in fixed and e not in excluded and e in edge_attr}
-    #     if not A:
-    #         return []
-
-    #     # T^λ ∩ A (use provided mst_edges)
-    #     TcapA = [e for e in mst_norm if e in A]
-
-    #     # If residual MST is feasible, nothing to cut
-    #     mst_len = sum(get_len(e) for e in TcapA)
-    #     if mst_len <= Bp + EPS:
-    #         return []
-
-    #     cuts = []
-
-    #     # Pre-sort A by length for U(S) and Kruskal completion
-    #     A_sorted = sorted(A, key=lambda e: get_len(e))
-
-    #     # --- DSU helpers (for component count & exact completion) ---
-    #     def get_nodes():
-    #         # best-effort: use graph nodes if present, otherwise infer from edge keys
-    #         if hasattr(self, "graph") and hasattr(self.graph, "nodes"):
-    #             try:
-    #                 return list(self.graph.nodes)
-    #             except Exception:
-    #                 pass
-    #         nodes = set()
-    #         for (u, v) in edge_attr.keys():
-    #             nodes.add(u); nodes.add(v)
-    #         for (u, v) in fixed:
-    #             nodes.add(u); nodes.add(v)
-    #         return list(nodes)
-
-    #     NODES = get_nodes()
-
-    #     def component_k_needed(contracted_edges):
-    #         """Number of edges needed to connect after contracting 'contracted_edges': k = #components - 1."""
-    #         parent = {n: n for n in NODES}
-    #         rank = {n: 0 for n in NODES}
-
-    #         def find(x):
-    #             while parent[x] != x:
-    #                 parent[x] = parent[parent[x]]
-    #                 x = parent[x]
-    #             return x
-
-    #         def union(x, y):
-    #             rx, ry = find(x), find(y)
-    #             if rx == ry:
-    #                 return
-    #             if rank[rx] < rank[ry]:
-    #                 parent[rx] = ry
-    #             elif rank[rx] > rank[ry]:
-    #                 parent[ry] = rx
-    #             else:
-    #                 parent[ry] = rx
-    #                 rank[rx] += 1
-
-    #         for (u, v) in contracted_edges:
-    #             if u in parent and v in parent:
-    #                 union(u, v)
-
-    #         reps = {find(n) for n in NODES}
-    #         comps = len(reps)
-    #         return max(0, comps - 1)
-
-    #     def U_of(Sprime):
-    #         """
-    #         Optimistic completion:
-    #         sum of k cheapest edges in A \\ S', where k = (#components after contracting fixed ∪ S') - 1.
-    #         This is stronger/more accurate than r' - |S'|.
-    #         """
-    #         Sprime_set = Sprime if isinstance(Sprime, set) else set(Sprime)
-    #         contracted = set(fixed) | Sprime_set
-    #         k = component_k_needed(contracted)
-    #         if k <= 0:
-    #             return 0.0
-
-    #         total = 0.0
-    #         taken = 0
-    #         for e in A_sorted:
-    #             if e in Sprime_set:
-    #                 continue
-    #             total += get_len(e)
-    #             taken += 1
-    #             if taken == k:
-    #                 break
-    #         return total if taken == k else float("inf")
-
-    #     def completion_mst_cost(Ssub):
-    #         """
-    #         Exact completion via Kruskal after contracting fixed ∪ Ssub.
-    #         Returns minimum additional length needed to connect components using edges in A \\ Ssub.
-    #         """
-    #         parent = {n: n for n in NODES}
-    #         rank = {n: 0 for n in NODES}
-
-    #         def find(x):
-    #             while parent[x] != x:
-    #                 parent[x] = parent[parent[x]]
-    #                 x = parent[x]
-    #             return x
-
-    #         def union(x, y):
-    #             rx, ry = find(x), find(y)
-    #             if rx == ry:
-    #                 return False
-    #             if rank[rx] < rank[ry]:
-    #                 parent[rx] = ry
-    #             elif rank[rx] > rank[ry]:
-    #                 parent[ry] = rx
-    #             else:
-    #                 parent[ry] = rx
-    #                 rank[rx] += 1
-    #             return True
-
-    #         contracted = set(fixed) | set(Ssub)
-    #         for (u, v) in contracted:
-    #             if u in parent and v in parent:
-    #                 union(u, v)
-
-    #         reps = {find(n) for n in NODES}
-    #         k_needed = max(0, len(reps) - 1)
-    #         if k_needed <= 0:
-    #             return 0.0
-
-    #         Sset = set(Ssub)
-    #         total = 0.0
-    #         taken = 0
-    #         for e in A_sorted:
-    #             if e in Sset:
-    #                 continue
-    #             u, v = e
-    #             if u not in parent or v not in parent:
-    #                 continue
-    #             if union(u, v):
-    #                 total += get_len(e)
-    #                 taken += 1
-    #                 if taken == k_needed:
-    #                     break
-    #         return total if taken == k_needed else float("inf")
-
-    #     def build_residual_minimal_cover(desc_edges):
-    #         """Minimal cover on B': add in desc ℓ, then prune shortest while violation remains."""
-    #         S, sL = [], 0.0
-    #         for e in desc_edges:
-    #             if e not in edge_attr:
-    #                 continue
-    #             S.append(e)
-    #             sL += get_len(e)
-    #             if sL > Bp + EPS:
-    #                 # prune shortest while still violating
-    #                 S.sort(key=lambda x: get_len(x))  # increasing
-    #                 k = 0
-    #                 while k < len(S) and (sL - get_len(S[k]) > Bp + EPS):
-    #                     sL -= get_len(S[k])
-    #                     k += 1
-    #                 if k > 0:
-    #                     S = S[k:]
-    #                 return S, sL
-    #         return None, None
-
-    #     def rhs_eff(cset):
-    #         """Effective RHS after accounting fixed-in edges."""
-    #         return len(cset) - 1 - sum(1 for e in cset if e in fixed)
-
-    #     def is_violated_now(cset):
-    #         """Check current MST violation: lhs > rhs_eff."""
-    #         lhs = sum(1 for e in cset if e in mst_set)
-    #         return lhs > rhs_eff(cset)
-
-    #     def cert_holds(Slist):
-    #         """
-    #         Certificate: sumℓ(S) + U(S) > B' (optimistic), else fallback to exact completion.
-    #         """
-    #         if not Slist or len(Slist) <= 1:
-    #             return False
-    #         if rhs_eff(Slist) <= 0:
-    #             return False
-    #         sumS = sum(get_len(e) for e in Slist)
-    #         U = U_of(Slist)
-    #         if U != float("inf") and (sumS + U) > (Bp + EPS):
-    #             return True
-    #         exact = completion_mst_cost(Slist)
-    #         return exact != float("inf") and (sumS + exact) > (Bp + EPS)
-
-    #     def inclusion_minimal_shrink(Sstart):
-    #         """
-    #         Make S inclusion-minimal under cert_holds by removing one edge at a time.
-    #         We try removals from longest to shortest for a small S.
-    #         """
-    #         Sstar = sorted(Sstart, key=lambda e: get_len(e), reverse=True)
-    #         changed = True
-    #         while changed and len(Sstar) > 1:
-    #             changed = False
-    #             for j in range(len(Sstar)):  # longest -> shortest
-    #                 trial = Sstar[:j] + Sstar[j+1:]
-    #                 if len(trial) <= 1:
-    #                     continue
-    #                 if cert_holds(trial):
-    #                     Sstar = sorted(trial, key=lambda e: get_len(e), reverse=True)
-    #                     changed = True
-    #                     break
-    #         return Sstar
-
-    #     def try_shrink_and_add(seed_S, seed_sumL):
-    #         """
-    #         Full LaTeX Step (2):
-    #         - remove longest edges until sumℓ <= B' => first S'
-    #         - require cert_holds(S')
-    #         - shrink to inclusion-minimal S* while certificate holds
-    #         - add the cut if it separates current MST
-    #         """
-    #         if not seed_S or len(seed_S) <= 1:
-    #             return
-
-    #         S_work = sorted(seed_S, key=lambda e: get_len(e), reverse=True)
-    #         sumL = float(seed_sumL)
-
-    #         # First S' with sumℓ <= B'
-    #         idx = 0
-    #         while idx < len(S_work) and sumL > Bp + EPS:
-    #             sumL -= get_len(S_work[idx])
-    #             idx += 1
-    #         Sprime = S_work[idx:]
-    #         if not Sprime or len(Sprime) <= 1:
-    #             return
-
-    #         if not cert_holds(Sprime):
-    #             return
-
-    #         Sstar = inclusion_minimal_shrink(Sprime)
-    #         if len(Sstar) <= 1:
-    #             return
-
-    #         if is_violated_now(Sstar):
-    #             cuts.append((set(Sstar), len(Sstar) - 1))
-
-    #     def lift_minimal_cover(S_min, rhs_base):
-    #         """
-    #         Stronger safe lifting for residual-minimal cover S:
-    #         Lift any f with ℓ(f) > B' - sumℓ(S) + Lmax.
-    #         (This is typically much stronger than ℓ(f) >= Lmax.)
-    #         """
-    #         S_base = set(S_min)
-    #         if not S_base:
-    #             return None
-    #         sumS = sum(get_len(e) for e in S_base)
-    #         Lmax = max(get_len(e) for e in S_base)
-    #         threshold = (Bp - sumS + Lmax)  # lift if len(f) > threshold
-
-    #         lift_add = {f for f in A if f not in S_base and get_len(f) > threshold + EPS}
-    #         if not lift_add:
-    #             return None
-
-    #         S_lift = S_base | lift_add
-    #         # RHS remains rhs_base (|S|-1 of original minimal cover)
-    #         if rhs_eff(S_lift) > 0 and is_violated_now(S_lift):
-    #             return (S_lift, rhs_base)
-    #         return None
-
-    #     # --- (1) primary seed from T^λ ∩ A ---
-    #     T_desc = sorted(TcapA, key=lambda e: get_len(e), reverse=True)
-    #     S_seed, sumL_seed = build_residual_minimal_cover(T_desc)
-    #     if not S_seed:
-    #         return []
-
-    #     S_seed = list(S_seed)
-    #     if rhs_eff(S_seed) > 0 and is_violated_now(S_seed):
-    #         cuts.append((set(S_seed), len(S_seed) - 1))
-
-    #     # Step (2): certificate shrink to inclusion-minimal S*
-    #     try_shrink_and_add(S_seed, sumL_seed)
-
-    #     # --- stronger lifting on the residual-minimal seed cover ---
-    #     lifted = lift_minimal_cover(S_seed, rhs_base=(len(S_seed) - 1))
-    #     if lifted is not None:
-    #         cuts.append(lifted)
-
-    #     # --- (1b) micro-seed: top-L heaviest admissible edges ---
-    #     if L_MICRO > 0 and len(A) > 0:
-    #         heavyA = sorted(A, key=lambda e: get_len(e), reverse=True)[:L_MICRO]
-    #         S2, sumL2 = build_residual_minimal_cover(heavyA)
-    #         if S2:
-    #             S2set = set(S2)
-    #             if rhs_eff(S2set) > 0 and S2set != set(S_seed) and is_violated_now(S2set):
-    #                 cuts.append((S2set, len(S2) - 1))
-
-    #             try_shrink_and_add(S2, sumL2)
-
-    #             lifted2 = lift_minimal_cover(S2, rhs_base=(len(S2) - 1))
-    #             if lifted2 is not None:
-    #                 cuts.append(lifted2)
-
-    #     # --- dedup & dominance-aware selection ---
-    #     uniq = {}
-    #     for cset, rhs in cuts:
-    #         key = tuple(sorted(cset))
-    #         best = uniq.get(key)
-    #         if best is None or rhs < best[1] or (rhs == best[1] and len(cset) < len(best[0])):
-    #             uniq[key] = (cset, rhs)
-
-    #     final = list(uniq.values())
-    #     final.sort(key=lambda t: (t[1], len(t[0])))
-
-    #     kept = []
-    #     for cset, rhs in final:
-    #         if rhs_eff(cset) <= 0:
-    #             continue
-    #         dominated = any(dset <= cset and drhs <= rhs for dset, drhs in kept)
-    #         if not dominated:
-    #             kept.append((cset, rhs))
-    #     return kept[:MAX_RETURN]
+   
     def generate_cover_cuts(self, mst_edges):
         """
         Node-local cover-cut separation (Section 6).
@@ -7866,45 +7494,14 @@ class LagrangianMST:
         L_fix = sum(get_len(e) for e in fixed if e in edge_attr)
         Bp = self.budget - L_fix
 
-        A = {
-            e for e in getattr(self, "edge_list", [])
-            if e not in fixed and e not in excluded and e in edge_attr
-        }
-
-        if not A:
-            return []
-
-        # Current Lagrangian tree restricted to the admissible unfixed edges.
-        TcapA = [e for e in mst_norm if e in A]
-
-        # Nothing to separate: the residual tree already respects B'.
-        if sum(get_len(e) for e in TcapA) <= Bp + EPS:
-            return []
-
-        # Admissible edges by increasing length, for the Kruskal completions.
-        A_sorted = sorted(A, key=get_len)
-
         # ------------------------------------------------------------
-        # Node list for the local union-find
+        # Union-find over vertex positions, shared by every structure below.
+        #
+        # Nodes are addressed by position so every union-find here runs on
+        # plain lists.  The dict-of-nodes version copied two dicts per C(.)
+        # call, which at 285 calls per separation cost more than the Kruskal
+        # walk itself; `list[:]` copies at C speed.
         # ------------------------------------------------------------
-        def get_nodes():
-            if hasattr(self, "graph") and hasattr(self.graph, "nodes"):
-                try:
-                    return list(self.graph.nodes)
-                except Exception:
-                    pass
-
-            nodes = set()
-            for (u, v) in edge_attr.keys():
-                nodes.add(u)
-                nodes.add(v)
-            for (u, v) in fixed:
-                nodes.add(u)
-                nodes.add(v)
-            return list(nodes)
-
-        NODES = get_nodes()
-
         def _find(parent, x):
             while parent[x] != x:
                 parent[x] = parent[parent[x]]
@@ -7925,26 +7522,210 @@ class LagrangianMST:
             return True
 
         # ------------------------------------------------------------
-        # F+ is contracted once; every C(.) evaluation starts from this state.
+        # Node list for the local union-find
         # ------------------------------------------------------------
-        base_parent = {n: n for n in NODES}
-        base_rank = {n: 0 for n in NODES}
-        base_components = len(NODES)
+        def get_nodes():
+            if hasattr(self, "graph") and hasattr(self.graph, "nodes"):
+                try:
+                    return list(self.graph.nodes)
+                except Exception:
+                    pass
 
-        for e in fixed:
-            if e not in edge_attr:
-                return []
+            nodes = set()
+            for (u, v) in edge_attr.keys():
+                nodes.add(u)
+                nodes.add(v)
+            for (u, v) in fixed:
+                nodes.add(u)
+                nodes.add(v)
+            return list(nodes)
 
-            u, v = e
-            if u not in base_parent or v not in base_parent:
-                return []
+        # ------------------------------------------------------------
+        # Node-invariant scaffolding, cached across the separations at a node.
+        #
+        # A = E \ (F+ u F-), the vertex indexing and the contraction of F+
+        # depend only on (F+, F-) -- not on the tree being separated.  One node
+        # separates several trees (one per cut round, plus the strong-branching
+        # probes), and rebuilding all of it per call cost an O(m) sweep and an
+        # O(m log m) sort every time.  The key is the CONTENTS of F+ and F-,
+        # not their identity: a pooled strong-branching solver is handed a new
+        # pair of sets per probe and would otherwise keep a stale scaffold.
+        # The identity checks on the shared edge arrays catch a move to a
+        # different instance.
+        #
+        # ONE slot, on the class rather than the instance.  Every node keeps
+        # its solver alive while it sits in the open list, so an instance
+        # attribute would pin a copy of A and its length order -- about a
+        # megabyte at n = 400 -- per open node, for a scaffold that is only
+        # ever read during that node's own solve.  Separation is strictly
+        # sequential (one node at a time, and the strong-branching probes run
+        # one after another), so a single slot has the same hit rate at
+        # constant total memory, and the scaffold is released as soon as the
+        # next node separates.  The key carries no solver identity because it
+        # does not need to: two solvers at the same fixings over the same edge
+        # arrays have the same scaffold.
+        # ------------------------------------------------------------
+        edge_list_ref = getattr(self, "edge_list", [])
+        cache_key = (frozenset(fixed), frozenset(excluded), self.budget)
+        SC = LagrangianMST._sep_cache
 
-            # A cycle inside F+ means no spanning tree contains it; the node is
-            # infeasible and there is nothing useful to separate.
-            if not _union(base_parent, base_rank, u, v):
-                return []
+        if (SC is None
+                or SC["attr"] is not edge_attr
+                or SC["elist"] is not edge_list_ref
+                or SC["key"] != cache_key):
 
-            base_components -= 1
+            # Kept as a list as well as a set: the length order below is a
+            # STABLE sort of this list, so equal lengths come out in
+            # edge_list order and every scan is reproducible.  Sorting a set,
+            # or sorting (length, edge) pairs to force an order, costs either
+            # determinism or roughly twice the sort time.
+            A_list_new = [
+                e for e in edge_list_ref
+                if e not in fixed and e not in excluded and e in edge_attr
+            ]
+            A_new = set(A_list_new)
+
+            NODES_new = get_nodes()
+            pos_new = {v: i for i, v in enumerate(NODES_new)}
+            n_new = len(NODES_new)
+
+            # F+ is contracted once; every C(.) evaluation starts from this
+            # state, and no consumer mutates it -- they all copy first.
+            bp_new = list(range(n_new))
+            br_new = [0] * n_new
+            bc_new = n_new
+            dead = not A_new
+
+            if not dead:
+                for e in fixed:
+                    if e not in edge_attr:
+                        dead = True
+                        break
+
+                    iu = pos_new.get(e[0])
+                    iv = pos_new.get(e[1])
+                    if iu is None or iv is None:
+                        dead = True
+                        break
+
+                    # A cycle inside F+ means no spanning tree contains it; the
+                    # node is infeasible and there is nothing to separate.
+                    if not _union(bp_new, br_new, iu, iv):
+                        dead = True
+                        break
+
+                    bc_new -= 1
+
+            SC = {
+                "key": cache_key,
+                "attr": edge_attr,
+                "elist": edge_list_ref,
+                "dead": dead,
+                "A": A_new,
+                "A_list": A_list_new,
+                "node_pos": pos_new,
+                "n": n_new,
+                "bp": bp_new,
+                "br": br_new,
+                "bc": bc_new,
+                # Built on first use only: the length order is needed by the
+                # lifting and dominance scans, the completion pool only by the
+                # tree-completion rung.  A rung that never asks pays nothing.
+                "A_desc": None,
+                "pool": None,
+            }
+            LagrangianMST._sep_cache = SC
+
+        if SC["dead"]:
+            return []
+
+        A = SC["A"]
+        node_pos = SC["node_pos"]
+        NUM_NODES_LOCAL = SC["n"]
+        base_parent = SC["bp"]
+        base_rank = SC["br"]
+        base_components = SC["bc"]
+
+        # Current Lagrangian tree restricted to the admissible unfixed edges.
+        TcapA = [e for e in mst_norm if e in A]
+
+        # Nothing to separate: the residual tree already respects B'.
+        if sum(get_len(e) for e in TcapA) <= Bp + EPS:
+            return []
+
+        # ------------------------------------------------------------
+        # A in nonincreasing length order.
+        #
+        # Both liftings want the long edges first and stop at a threshold
+        # that rises as edges enter, so they walk this one cached list and
+        # break, instead of sorting a candidate set of their own per call: at
+        # n = 400 that is one sort of 16k edges per node in place of two per
+        # separation, and the scans themselves touch only the tail above the
+        # threshold rather than all of A.
+        #
+        # Stable sort of A in edge_list order, so equal lengths come out in a
+        # fixed order rather than in the iteration order of whichever set the
+        # caller happened to build.
+        # ------------------------------------------------------------
+        def _A_desc():
+            desc = SC["A_desc"]
+            if desc is None:
+                desc = sorted(SC["A_list"], key=get_len)
+                desc.reverse()
+                SC["A_desc"] = desc
+            return desc
+
+        # ------------------------------------------------------------
+        # Pool for the C(.) completions.
+        #
+        # C(Q) is a Kruskal over the admissible edges with F+ u Q contracted.
+        # Running it over all of A is wasted work: every edge outside the
+        # minimum spanning FOREST of (V, A) is rejected by it anyway.  Take
+        # f not in that forest.  Global Kruskal skipped f because its ends
+        # were already joined by a path P of edges no longer than f, and P
+        # lies in the forest.  The completion walks the same lengths in the
+        # same order and starts from strictly more merging (F+ u Q is
+        # contracted first), so by the time it reaches f the ends of P -- and
+        # hence of f -- are connected there too, and f is rejected again.  An
+        # edge of P that sits in Q is contracted from the start, which only
+        # merges them sooner.
+        #
+        # So the completion pool is the spanning forest, which is at most
+        # n - 1 edges against |A| = O(n^2): at n = 400, density 0.2 that is
+        # 399 instead of 15960, for exactly the same C(Q).  Section 6.3 tests
+        # one deletion per cover edge per pass, so this is the difference
+        # between the `full` rung costing 72% of the solve and costing a few
+        # percent.  The lifting steps still range over all of A.
+        #
+        # Only the tree-completion rung evaluates C(.), so the forest is built
+        # on demand: `literature` and `lemma1` return before ever asking, and
+        # used to pay a Kruskal over all of A on every separation for nothing.
+        # ------------------------------------------------------------
+        def _pool():
+            pool = SC["pool"]
+
+            if pool is None:
+                parent = list(range(NUM_NODES_LOCAL))
+                rank = [0] * NUM_NODES_LOCAL
+                pool = []
+
+                # Ascending length: _A_desc() reversed.
+                for e in reversed(_A_desc()):
+                    iu = node_pos.get(e[0])
+                    iv = node_pos.get(e[1])
+
+                    if iu is None or iv is None:
+                        continue
+
+                    if _union(parent, rank, iu, iv):
+                        pool.append((iu, iv, float(get_len(e)), e))
+
+                        if len(pool) == NUM_NODES_LOCAL - 1:
+                            break
+
+                SC["pool"] = pool
+
+            return pool
 
         # ------------------------------------------------------------
         # C(Q): minimum additional LENGTH needed to complete F+ u Q to a
@@ -7957,10 +7738,10 @@ class LagrangianMST:
         # exact C(Q) must omit the threshold.
         # ------------------------------------------------------------
         def completion_mst_cost(Q, stop_above=None):
-            Qset = set(Q)
+            Qset = Q if isinstance(Q, (set, frozenset)) else set(Q)
 
-            parent = dict(base_parent)
-            rank = dict(base_rank)
+            parent = base_parent[:]
+            rank = base_rank[:]
             components = base_components
 
             # Contract Q. A cycle in F+ u Q means no spanning tree contains it.
@@ -7969,10 +7750,12 @@ class LagrangianMST:
                     return float("inf")
 
                 u, v = e
-                if u not in parent or v not in parent:
+                iu = node_pos.get(u)
+                iv = node_pos.get(v)
+                if iu is None or iv is None:
                     return float("inf")
 
-                if not _union(parent, rank, u, v):
+                if not _union(parent, rank, iu, iv):
                     return float("inf")
 
                 components -= 1
@@ -7982,16 +7765,12 @@ class LagrangianMST:
 
             total = 0.0
 
-            for e in A_sorted:
+            for iu, iv, le, e in _pool():
                 if e in Qset:
                     continue
 
-                u, v = e
-                if u not in parent or v not in parent:
-                    continue
-
-                if _union(parent, rank, u, v):
-                    total += get_len(e)
+                if _union(parent, rank, iu, iv):
+                    total += le
                     components -= 1
 
                     if components == 1:
@@ -8003,19 +7782,162 @@ class LagrangianMST:
             # F+ u Q cannot be completed to a spanning tree at this node.
             return float("inf")
 
-        def certified(Q):
-            """Tree-completion certificate (20)."""
-            if not Q:
-                return False
+        # ------------------------------------------------------------
+        # Deletion scan in one pass instead of one completion per candidate.
+        #
+        # `deletable_after` returns, for the current cover Q, the exact
+        # M(Q \ {e}) of EVERY e in Q at once.
+        #
+        # T is the shortest spanning tree containing F+ u Q, i.e. the MST of
+        # the graph with those edges priced at -infinity.  Dropping e from the
+        # mandatory set only raises one weight, from -infinity back to l_e, and
+        # the MST update for raising a tree edge's weight is the textbook one:
+        # the tree either keeps e or swaps it for the shortest edge crossing
+        # the cut that removing e leaves behind.  So
+        #
+        #     M(Q \ {e}) = M(Q) - max(0, l_e - repl(e))
+        #
+        # with repl(e) the shortest non-tree edge across that cut, +inf when e
+        # is a bridge.  repl is attained inside COMPLETION_POOL for the same
+        # reason the completions are: an edge outside the spanning forest has
+        # its ends joined there by shorter edges, and that path has to cross
+        # the cut somewhere.
+        #
+        # All the repl values come from one ascending sweep of the pool with a
+        # union-find that climbs T and collapses each tree edge as it is
+        # settled -- the standard offline MST-sensitivity pass, O(n a(n)).
+        # That replaces |Q| completion Kruskals per pass, which is what made
+        # the `full` rung quadratic in n and 72% of the solve at n = 400.
+        # ------------------------------------------------------------
+        def deletable_after(Q, sumQ):
+            Qset = Q if isinstance(Q, (set, frozenset)) else set(Q)
 
-            sumQ = sum(get_len(e) for e in Q)
-            completion = completion_mst_cost(Q, stop_above=Bp - sumQ)
+            parent = base_parent[:]
+            rank = base_rank[:]
+            components = base_components
 
-            # No feasible spanning tree contains F+ u Q at all.
-            if completion == float("inf"):
-                return True
+            # T starts as F+ (already contracted into base) plus Q.
+            tree_edges = []
 
-            return sumQ + completion > Bp + EPS
+            for e in Qset:
+                if e not in edge_attr:
+                    return None, float("inf")
+
+                u, v = e
+                iu = node_pos.get(u)
+                iv = node_pos.get(v)
+                if iu is None or iv is None:
+                    return None, float("inf")
+
+                if not _union(parent, rank, iu, iv):
+                    return None, float("inf")
+
+                components -= 1
+                tree_edges.append((iu, iv, get_len(e), e))
+
+            completion_total = 0.0
+            in_tree = set(Qset)
+
+            if components > 1:
+                for iu, iv, le, e in _pool():
+                    if e in Qset:
+                        continue
+
+                    if _union(parent, rank, iu, iv):
+                        completion_total += le
+                        components -= 1
+                        tree_edges.append((iu, iv, le, e))
+                        in_tree.add(e)
+
+                        if components == 1:
+                            break
+
+            if components > 1:
+                # F+ u Q cannot be completed to a spanning tree at this node.
+                return None, float("inf")
+
+            M_cur = sumQ + completion_total
+
+            # F+ edges are mandatory everywhere and are never scan candidates,
+            # but they are part of T and must be climbed through, so add them.
+            for e in fixed:
+                iu = node_pos.get(e[0])
+                iv = node_pos.get(e[1])
+                if iu is not None and iv is not None:
+                    tree_edges.append((iu, iv, get_len(e), e))
+                    in_tree.add(e)
+
+            # Root T and record, for each vertex, the tree edge to its parent.
+            adj = [[] for _ in range(NUM_NODES_LOCAL)]
+            for iu, iv, le, e in tree_edges:
+                adj[iu].append((iv, e))
+                adj[iv].append((iu, e))
+
+            par = [-1] * NUM_NODES_LOCAL
+            par_edge = [None] * NUM_NODES_LOCAL
+            depth = [0] * NUM_NODES_LOCAL
+            seen = [False] * NUM_NODES_LOCAL
+
+            for root in range(NUM_NODES_LOCAL):
+                if seen[root]:
+                    continue
+                seen[root] = True
+                stack = [root]
+                while stack:
+                    x = stack.pop()
+                    for y, e in adj[x]:
+                        if not seen[y]:
+                            seen[y] = True
+                            par[y] = x
+                            par_edge[y] = e
+                            depth[y] = depth[x] + 1
+                            stack.append(y)
+
+            # `up` collapses vertices whose parent edge already has its repl.
+            up = list(range(NUM_NODES_LOCAL))
+
+            def _up_find(x):
+                while up[x] != x:
+                    up[x] = up[up[x]]
+                    x = up[x]
+                return x
+
+            repl = {}
+            remaining = len(Qset)
+
+            for iu, iv, le, e in _pool():
+                if remaining <= 0:
+                    break
+                if e in in_tree:
+                    continue
+
+                a = _up_find(iu)
+                b = _up_find(iv)
+
+                while a != b:
+                    if depth[a] < depth[b]:
+                        a, b = b, a
+
+                    pe = par_edge[a]
+                    if pe is None:
+                        break
+
+                    if pe in Qset and pe not in repl:
+                        repl[pe] = le
+                        remaining -= 1
+
+                    up[a] = _up_find(par[a])
+                    a = _up_find(a)
+
+            out = {}
+            for e in Qset:
+                r = repl.get(e)
+                le = get_len(e)
+                drop = 0.0 if r is None else max(0.0, le - r)
+                out[e] = M_cur - drop
+
+            return out, M_cur
+
 
         # ------------------------------------------------------------
         # Sequential unit lifting, shared by Lemma 1 and Lemma 2.
@@ -8025,18 +7947,45 @@ class LagrangianMST:
         # refreshed after every acceptance so that the threshold tracks the
         # growing support. sigma never increases, so the threshold never
         # decreases: once a candidate fails, every shorter one fails too.
+        #
+        # `candidates` is an iterable of edges in nonincreasing length order,
+        # and the scan stops at the first failure, so callers stream the
+        # shared descending view of A instead of sorting a candidate set of
+        # their own.  Edges already in H are skipped without testing the
+        # threshold, exactly as when they were excluded from the candidate set
+        # up front.
+        #
+        # Candidates of equal length are not interchangeable: an acceptance
+        # can only lower sigma, so the threshold only rises, and a block of
+        # equal-length candidates is cut off after however many the budget
+        # allows.  Which ones those are is a tie-break, and the shared view
+        # fixes it by edge index so it is the same on every run -- the
+        # candidate sets built per call used to leave it to set iteration
+        # order, which is why two runs could lift different edges of the same
+        # length into a support of the same size.
         # ------------------------------------------------------------
         def unit_lift(cover, cap, candidates):
             H = set(cover)
             k = len(H)
 
-            if k < 1 or not candidates:
+            if k < 1:
+                return H
+
+            # Escape hatch for measuring what the lifting is worth to a
+            # DUALIZED cut, which contributes only mu * (|T n S| - rhs).
+            # Lifting leaves rhs alone and admits the longest admissible
+            # edges, which is what the priced tree already avoids, so the
+            # suspicion is that |T n S| -- and hence the bound -- does not
+            # move while the support, and the cost of carrying it, grows.
+            # Off by default: this only exists so the claim can be tested
+            # rather than argued.
+            if not getattr(self, "lift_cuts", True):
                 return H
 
             lens = sorted(get_len(e) for e in H)
             sigma = sum(lens[:k - 1])
 
-            for f in sorted(candidates, key=get_len, reverse=True):
+            for f in candidates:
                 if f in H:
                     continue
 
@@ -8059,21 +8008,39 @@ class LagrangianMST:
         # A(Q): admissible edges internal to a component of the forest F+ u Q.
         # They cannot join two components, so they cannot lower the minimum
         # completion length below C(Q).
+        #
+        # Returned as a membership test rather than a set.  Its only consumer
+        # is the Lemma 2 lifting, which walks A from the longest edge down and
+        # stops at a length threshold, so materializing A(Q*) meant an O(|A|)
+        # union-find sweep per separation to build a set whose short half was
+        # never looked at.  The filter is applied lazily along that walk
+        # instead; the forest is still built once per call.
         # ------------------------------------------------------------
-        def internal_admissible(Q):
-            parent = dict(base_parent)
-            rank = dict(base_rank)
+        def internal_admissible_test(Q):
+            parent = base_parent[:]
+            rank = base_rank[:]
 
             for (u, v) in Q:
-                if u in parent and v in parent:
-                    _union(parent, rank, u, v)
+                iu = node_pos.get(u)
+                iv = node_pos.get(v)
+                if iu is not None and iv is not None:
+                    _union(parent, rank, iu, iv)
 
-            return {
-                (u, v) for (u, v) in A
-                if u in parent
-                and v in parent
-                and _find(parent, u) == _find(parent, v)
-            }
+            # Flattened once: the Lemma 2 scan tests thousands of candidates
+            # per separation, and a list index beats two path-compressing
+            # finds per test.
+            comp = [_find(parent, i) for i in range(NUM_NODES_LOCAL)]
+
+            def _is_internal(e):
+                iu = node_pos.get(e[0])
+                iv = node_pos.get(e[1])
+
+                if iu is None or iv is None:
+                    return False
+
+                return comp[iu] == comp[iv]
+
+            return _is_internal
 
         # ------------------------------------------------------------
         # Static dominance-based extension of Agra et al. [5, 6], used by the
@@ -8111,14 +8078,24 @@ class LagrangianMST:
                 if ru != rv:
                     cover_parent[ru] = rv
 
-            return C | {
-                e for e in A
-                if e not in C
-                and get_len(e) >= l_max - EPS
-                and e[0] in cover_parent
-                and e[1] in cover_parent
-                and cover_find(e[0]) == cover_find(e[1])
-            }
+            # A flat sweep of A with a length test, deliberately NOT the
+            # shared descending view: the threshold here is fixed at l_max
+            # rather than rising as edges enter, so there is nothing to gain
+            # from an ordering, and asking for one would make the
+            # `literature` rung pay an O(m log m) sort it otherwise never
+            # needs -- this is the only scan it runs, and the tree-completion
+            # machinery is never reached.
+            out = set(C)
+
+            for e in SC["A_list"]:
+                if (get_len(e) >= l_max - EPS
+                        and e not in C
+                        and e[0] in cover_parent
+                        and e[1] in cover_parent
+                        and cover_find(e[0]) == cover_find(e[1])):
+                    out.add(e)
+
+            return out
 
         # ------------------------------------------------------------
         # Deduplication and dominance filtering, shared by every rung.
@@ -8181,7 +8158,9 @@ class LagrangianMST:
         # ============================================================
         # 6.2 Lifted residual cover: rhs stays |S| - 1
         # ============================================================
-        cuts.append((unit_lift(S_seed, Bp, A - set(S_seed)), len(S_seed) - 1))
+        # S_seed is already in H, so streaming all of A is the same
+        # candidate set as A \ S_seed.
+        cuts.append((unit_lift(S_seed, Bp, _A_desc()), len(S_seed) - 1))
 
         if strengthening == "lemma1":
             # Sequential unit lifting only: no contraction, no Lemma 2.
@@ -8191,6 +8170,80 @@ class LagrangianMST:
         # 6.3 / 6.4 Lifted tree-completion cover: rhs stays |Q*| - 1
         # ============================================================
         Q_star = set(S_seed)
+
+        # Running state for the deletion scan.  `sum_Q` is kept incrementally,
+        # and the certificate below is carried between candidates.
+        #
+        # M is monotone and 1-Lipschitz downwards in a deletion:
+        #   M(Q \ {e}) >= M(Q) - l_e.
+        # (Take the shortest spanning tree T' for Q \ {e}.  If e is in T' then
+        # M(Q) <= M(Q\{e}) outright; otherwise T' + e closes a cycle carrying
+        # an edge f outside F+ u Q, and T' + e - f contains F+ u Q with length
+        # at most len(T') + l_e.)  So M(Q_star) - l_e > B' already certifies
+        # Q_star \ {e}, and the completion walk can be skipped for it -- which
+        # is exactly the short edges the scan tries first.
+        sum_Q = float(sum(get_len(e) for e in Q_star))
+
+        # One pass of `deletable_after` gives the exact M(Q0 \ {x}) for every
+        # x in the Q0 it ran at.  A deletion moves Q_star off Q0, and
+        # recomputing after each one made this the single most expensive
+        # function in the solver (21 sensitivity passes per node at n = 200).
+        #
+        # Most of those passes are avoidable, because the pass's values stay
+        # usable after the set moves.  Writing D for the edges deleted since
+        # the pass and D' = D u {e} for the deletion under test, repeated
+        # application of 1-Lipschitz from any single anchor x in D' gives
+        #
+        #     M(Q0 \ D') >= M(Q0 \ {x}) - sum_{y in D', y != x} l_y
+        #                 = exact[x] + l_x - sum_{y in D'} l_y,
+        #
+        # so the best certificate the pass supports is the largest anchor:
+        #
+        #     M(Q_star \ {e}) >= max_{x in D'} (exact[x] + l_x)
+        #                        - (sum_{y in D} l_y + l_e).
+        #
+        # Since exact[x] + l_x = M(Q0) + min(l_x, repl(x)) >= M(Q0), every
+        # anchor is at least as strong as chaining plain M(Q) - l_e steps off
+        # M(Q0), which is what the carried bound used to do -- it effectively
+        # pinned x to the first deletion after the pass and threw the rest of
+        # the pass away.  `anchor` keeps the running maximum instead, so each
+        # further deletion can only strengthen the certificate.  A pass is
+        # needed only when even that fails, and the scan tries the shortest
+        # edges first, which is exactly where the certificate bites.
+        exact = None            # x -> M(Q0 \ {x}) from the last pass
+        M0 = None               # M(Q0) at that pass
+        del_sum = 0.0           # total length deleted since that pass
+        anchor = float("-inf")  # max over deleted x of exact[x] + l_x
+        no_tree = False
+
+        def _refresh():
+            nonlocal exact, M0, del_sum, anchor, no_tree
+            exact, M_val = deletable_after(Q_star, sum_Q)
+            no_tree = exact is None
+            M0 = M_val
+            del_sum = 0.0
+            anchor = float("-inf")
+
+        def _lb_after(e, le):
+            """Lower bound on M(Q_star \ {e}); exact while no deletion has
+            happened since the last pass."""
+            if exact is None:
+                return float("-inf")
+
+            ex = exact.get(e)
+
+            if del_sum == 0.0:
+                # Q_star is still the Q0 of the pass: the value is exact.
+                return float("-inf") if ex is None else ex
+
+            best = anchor
+
+            if ex is not None and ex + le > best:
+                best = ex + le
+
+            return best - (del_sum + le)
+
+        _refresh()
 
         changed = True
         while changed and len(Q_star) > 1:
@@ -8203,21 +8256,79 @@ class LagrangianMST:
                 if e not in Q_star:
                     continue
 
-                trial = Q_star - {e}
+                le = get_len(e)
 
-                if certified(trial):
-                    Q_star = trial
-                    changed = True
+                # `no_tree` means F+ u Q_star admits no spanning tree, so
+                # M = +inf and the deletion is certified.  It must be
+                # re-established after each deletion rather than latched: the
+                # claim "no spanning tree for Q implies none for Q \ {e}" is
+                # only sound when the obstruction is connectivity (dropping a
+                # mandatory edge returns it to the completion pool, which
+                # leaves reachability unchanged).  If the obstruction were a
+                # cycle inside F+ u Q, removing e could break it and the
+                # deletion would NOT be certified -- so the flag is refreshed
+                # with the rest of the state instead of being trusted forever.
+                if no_tree:
+                    _refresh()
+
+                if no_tree:
+                    ok = True
+                else:
+                    lb = _lb_after(e, le)
+
+                    if lb > Bp + EPS:
+                        # Certified with no pass: either the exact value from
+                        # a current pass, or the anchored bound above.
+                        ok = True
+                    elif del_sum == 0.0:
+                        # The pass is current, so `lb` was the exact value and
+                        # this edge genuinely cannot be deleted.
+                        ok = False
+                    else:
+                        _refresh()
+                        ok = (
+                            True if no_tree
+                            else exact.get(e, float("-inf")) > Bp + EPS
+                        )
+
+                if not ok:
+                    continue
+
+                Q_star = Q_star - {e}
+                sum_Q -= le
+
+                # The pass's values stay usable; only the anchor and the
+                # deleted total move with the set.
+                del_sum += le
+
+                if exact is not None:
+                    ex = exact.get(e)
+
+                    if ex is not None and ex + le > anchor:
+                        anchor = ex + le
+
+                changed = True
 
         if len(Q_star) > 1:
-            C_star = completion_mst_cost(Q_star)
+            # When the last pass ran at the Q_star the scan ended on -- no
+            # deletion since, i.e. del_sum == 0 -- it already computed
+            # M(Q_star) = sum_Q + C(Q_star) exactly, so C_star can be read off
+            # it instead of contracting Q_star and walking the pool a second
+            # time.  After a certified deletion only a lower bound is in hand,
+            # so fall back to the full computation there.
+            if del_sum == 0.0 and M0 is not None and not math.isinf(M0):
+                C_star = M0 - sum_Q
+            else:
+                C_star = completion_mst_cost(Q_star)
+
             B_star = Bp - C_star
 
             if C_star != float("inf") and B_star > -EPS:
+                _is_internal = internal_admissible_test(Q_star)
                 H_tc = unit_lift(
                     Q_star,
                     B_star,
-                    internal_admissible(Q_star) - Q_star,
+                    (f for f in _A_desc() if _is_internal(f)),
                 )
             else:
                 # C(Q*) alone already exhausts B': the node is infeasible and
@@ -8243,7 +8354,20 @@ class LagrangianMST:
         if lam:
             base = base + lam * self.edge_lengths
 
-        # No cuts? return λ-priced base
+        # No cuts -- or every multiplier at zero, which is what the lambda
+        # phase runs with -- return the lambda-priced base.  Without the
+        # all-zero test the lambda phase still took the cut path every
+        # iteration: a third O(m) copy plus a per-cut Python loop, to produce
+        # a vector identical to `base`.
+        if self.use_cover_cuts and self.best_cuts:
+            _mults = self.best_cut_multipliers
+            if not _mults or not any(v > 0.0 for v in _mults.values()):
+                self._mw_cached = None
+                self._mw_lambda = lam
+                self._mw_mu = None
+                self._mw_free_mask_key = None
+                return base
+
         if not (self.use_cover_cuts and self.best_cuts):
             self._mw_cached = None
             self._mw_lambda = lam
@@ -8382,12 +8506,33 @@ class LagrangianMST:
             else:
                 return float('inf'), float('inf'), []
 
-        # Remaining candidate edges (canonical size!)
+        # Remaining candidate edges (canonical size!), ordered with numpy.
+        #
+        # The list comprehension plus `sort(key=lambda i: modified_weights[i])`
+        # ran a Python-level pass over every edge and then called the lambda
+        # O(m log m) times on numpy scalars.  At n = 250 that is some six
+        # thousand key calls per Kruskal, and the dual runs one Kruskal per
+        # subgradient iteration -- which is exactly what the cut phase adds
+        # more of.  A mask, `flatnonzero` and a stable `argsort` do the same
+        # work in C.
+        #
+        # The order is unchanged, ties included: `list.sort` is stable over a
+        # candidate list already in ascending index order, and
+        # `argsort(kind="stable")` is stable over `cand`, which is also in
+        # ascending index order.  The accumulation below still indexes the
+        # caller's array, so the arithmetic is bit-for-bit what it was.
         m = len(self.edge_list)
-        candidates = [i for i in range(m)
-                    if i not in self.fixed_edge_indices and i not in self.excluded_edge_indices]
 
-        candidates.sort(key=lambda i: modified_weights[i])
+        mask = np.ones(m, dtype=bool)
+
+        for i in self.fixed_edge_indices:
+            mask[i] = False
+        for i in self.excluded_edge_indices:
+            mask[i] = False
+
+        cand = np.flatnonzero(mask)
+        _mw = np.asarray(modified_weights)
+        candidates = cand[np.argsort(_mw[cand], kind="stable")].tolist()
 
         for i in candidates:
             u, v = self.edge_list[i]
@@ -8435,29 +8580,55 @@ class LagrangianMST:
                 # Fixed edges already create a cycle -> infeasible
                 return float('inf'), float('inf'), []
 
-        weight_changes = current_weights - prev_weights
-        changed_indices = np.where(np.abs(weight_changes) > self.cache_tolerance)[0]
-        changed_edges   = set(changed_indices)
+        # Candidate set, as a mask rather than a Python set.
+        #
+        # The old form built `set(np.where(...)[0])` -- a Python set of numpy
+        # scalars -- unioned it with the previous tree, subtracted two more
+        # sets and then ran `sorted(..., key=lambda i: current_weights[i])`.
+        # Every one of those steps is a Python-level loop over the candidates,
+        # and lambda is invoked O(k log k) times.  Since lambda moves on every
+        # subgradient iteration, EVERY edge weight changes, so the "incremental"
+        # candidate set is in fact the whole edge list and this was a full
+        # Kruskal paying the slowest possible ordering.  Same set, same order
+        # (ties by ascending index, as the old set iteration gave), built with
+        # numpy.
+        mask = np.abs(current_weights - prev_weights) > self.cache_tolerance
 
-        prev_mst_indices = {
-            self.edge_indices[(u, v)] for u, v in prev_mst_edges
-            if self.edge_indices[(u, v)] not in self.fixed_edge_indices
-        }
-        candidate_indices = (
-            prev_mst_indices | changed_edges
-        ) - self.excluded_edge_indices - self.fixed_edge_indices
+        for (u, v) in prev_mst_edges:
+            j = self.edge_indices.get((u, v))
+            if j is not None:
+                mask[j] = True
 
-        sorted_edges = sorted(candidate_indices, key=lambda i: current_weights[i])
+        # Both index sets are built with an `if (u, v) in self.edge_indices`
+        # filter, so neither can hold None -- no per-edge guard needed on the
+        # hot path.
+        for j in self.fixed_edge_indices:
+            mask[j] = False
+        for j in self.excluded_edge_indices:
+            mask[j] = False
 
-        for edge_idx in sorted_edges:
-            u, v = self.edge_list[edge_idx]
-            if uf.union(u, v):
+        cand = np.flatnonzero(mask)
+        order = cand[np.argsort(current_weights[cand], kind="stable")]
+
+        edge_list = self.edge_list
+        lengths = self.edge_lengths
+        need = self.num_nodes - 1
+        union = uf.union
+
+        for edge_idx in order.tolist():
+            u, v = edge_list[edge_idx]
+            if union(u, v):
                 mst_edges.append((u, v))
                 mst_cost   += current_weights[edge_idx]
-                mst_length += self.edge_lengths[edge_idx]
+                mst_length += lengths[edge_idx]
+
+                # Kruskal is finished once the tree spans; the old loop kept
+                # scanning the remaining candidates for nothing.
+                if len(mst_edges) == need:
+                    break
 
         # NEW: cheap validity check – tree must have exactly n-1 edges
-        if len(mst_edges) != self.num_nodes - 1:
+        if len(mst_edges) != need:
             return float('inf'), float('inf'), []
 
         return mst_cost, mst_length, mst_edges
@@ -8603,8 +8774,26 @@ class LagrangianMST:
             except TypeError:
                 return
 
+        # Inherited cuts arrive from MSTNode.create_children, which has already
+        # normalised every edge and dropped anything outside the edge list, so
+        # the general walk above re-derives what it is handed.  That cost 9% of
+        # the whole solve at n=200 (4.6M _iter_edges_any calls in one run).
+        # A set intersection settles it at C speed, and when it does not come
+        # out whole the input was not already normalised and the slow path
+        # still runs.
+        edge_key_set = getattr(self, "_edge_key_set", None)
+        if edge_key_set is None or len(edge_key_set) != len(edge_indices):
+            edge_key_set = set(edge_indices)
+            self._edge_key_set = edge_key_set
+
         def _norm_pair(pair):
             cut_like, rhs_like = pair
+
+            if isinstance(cut_like, (set, frozenset)):
+                kept = cut_like & edge_key_set
+                if len(kept) == len(cut_like):
+                    return (set(kept), int(rhs_like))
+
             return (set(_iter_edges_any(cut_like)), int(rhs_like))
 
         if inherited_cuts:
@@ -9116,32 +9305,115 @@ class LagrangianMST:
 
             # μ update parameters.
             #
-            # "joint" is the single shared step size of (28) and is the default.
-            # It only behaves correctly when the node has a finite incumbent, so
-            # that a real Polyak gap can be formed; MSTNode seeds one from the
-            # minimum-length spanning tree and from the running incumbent.
-            # Without that seed every node falls back to a constant step and mu
-            # never leaves its initial 1e-3, so the cuts never reach the MST.
+            # The two families of dualized rows are measured in different units,
+            # and that -- not the separation -- is what used to make the cover
+            # cuts useless:
             #
-            # "block" gives the cut rows a Polyak step over the cut subgradient
-            # norm alone.  It is kept for experiments but is NOT a good default:
-            # the cut norm is O(1) while the gap is O(10^2), so the step is
-            # large enough that mu dominates and lambda stops converging.  On
-            # n=30 roots it took the dual bound from 594 (no cuts) down to 327,
-            # where "joint" lifts it to 623.
-            mu_step_mode = str(getattr(self, "mu_step_mode", "joint")).lower()
+            #   budget row    g_lambda = sum_e l_e x_e - B      (a LENGTH, 1e2..1e4)
+            #   cover rows    g_mu_i   = |T n S_i| - rhs_i      (a COUNT,  0..10)
+            #
+            # "joint" forms one Polyak step alpha = gamma * gap / ||g||^2 over
+            # the concatenated vector and reuses it for mu.  ||g||^2 is the
+            # budget row squared to within a rounding error, so alpha is sized
+            # for lambda and lands 3-4 orders of magnitude below what the cut
+            # rows need.  Measured over a full 783-node run at n=50: the largest
+            # mu ever reached was 2.0e-3 against modified edge weights of order
+            # 5e2, i.e. a price the MST can never see.  Each cut then moved the
+            # bound by mu * (lhs - rhs) ~ 1e-3 while still costing separation
+            # time -- cuts on came out slower and no tighter than cuts off.
+            #
+            # "block" sizes the step on the cut rows alone.  That overshoots by
+            # about as much as "joint" undershoots (gap/||g_mu||^2 with the
+            # inflated incumbent gap gives mu ~ 1e2 where ~1 is wanted), mu then
+            # dominates the modified weights and lambda stops converging.  On
+            # n=30 roots it took the dual bound from 594 (no cuts) down to 327.
+            #
+            # "scaled" keeps the joint Polyak step but first puts the budget row
+            # into the cut rows' units by dividing it by the mean edge length.
+            # That removes the 1e6 imbalance, but a Polyak step is still the
+            # wrong instrument for these rows: it sizes the step by the duality
+            # gap, and along a cut coordinate the dual is nearly flat -- the
+            # whole gain available from a cover cut at an n=50 root measures
+            # +1.5 on a bound of 4.0e3, while the mu that collects it is ~1.
+            # A gap-sized step therefore crawls (0.01 per iteration) exactly
+            # where it needs to travel furthest.
+            #
+            # "normalized" drops the gap and measures the step in
+            # the units mu is actually denominated in.  mu is a price added to
+            # edge weights, so one step moves the multiplier vector a fixed
+            # fraction `mu_step_frac` of the modified-weight scale along
+            # g_mu/||g_mu||, shrinking geometrically over the cut phase so the
+            # sequence settles instead of oscillating.  This is the standard
+            # normalized subgradient step with a diminishing scale, and it is
+            # safe here precisely because phase 1 has already banked the plain
+            # bound: an overshoot costs cut-phase iterations, never bound.
+            #
+            # "normalized_inf" is the DEFAULT: the same fixed distance, taken
+            # with the infinity norm, so a pool of k cuts does not slow each
+            # multiplier by sqrt(k).  See the note at the alpha_mu branch.
+            mu_step_mode = str(getattr(self, "mu_step_mode", "normalized_inf")).lower()
             gamma_mu = getattr(self, "gamma_mu", 0.25)
-            mu_increment_cap = getattr(
-                self,
-                "mu_increment_cap",
-                0.002 if mu_step_mode == "joint" else None,
+
+            # Row scale used by "scaled": the mean length of an admissible edge.
+            len_scale = float(np.mean(np.abs(self.edge_lengths)))
+            if not (len_scale > 0.0) or math.isnan(len_scale):
+                len_scale = 1.0
+
+            # The scale mu lives on: a typical modified edge weight.  Every mu
+            # quantity below is a fraction of this, so nothing depends on how
+            # the instance generator happens to scale weights and lengths.
+            weight_scale = float(
+                np.mean(np.abs(self.edge_weights))
+                + max(0.0, float(getattr(self, "lmbda", 0.0))) * len_scale
             )
+            if not (weight_scale > 0.0) or math.isnan(weight_scale):
+                weight_scale = 1.0
+
+            # Distance mu travels on the first cut-phase iteration, and the
+            # per-iteration shrink applied to it.
+            mu_step_frac = float(getattr(self, "mu_step_frac", 0.002))
+            mu_step_decay = float(getattr(self, "mu_step_decay", 0.9))
+
+            # mu prices edges, so a cap on its increment only means something
+            # relative to the weights it is added to.  The old default was a
+            # hard 0.002, which on these instances (modified weights ~5e2) was a
+            # 4e-6 relative move and clamped the step to nothing on exactly the
+            # nodes where the cut mattered.  Express it as a fraction of the
+            # modified-weight scale instead.
+            #
+            # Note this is a SAFETY RAIL, not a tuning knob, under either
+            # normalized mode: those take a step of at most
+            # mu_step_frac * weight_scale (0.002 by default), a full order of
+            # magnitude under mu_cap_frac * weight_scale, so the clamp never
+            # binds.  It exists for "joint"/"block"/"scaled", whose Polyak
+            # ratios are unbounded when the incumbent gap is loose.
+            mu_cap_frac = getattr(self, "mu_cap_frac", 0.02)
+            mu_increment_cap = getattr(self, "mu_increment_cap", None)
+            if mu_increment_cap is None and mu_cap_frac is not None:
+                mu_increment_cap = float(mu_cap_frac) * weight_scale
 
             eps = 1e-12
 
-            # Depth-based behaviour
-            max_cut_depth = getattr(self, "max_cut_depth", 30)
-            max_mu_depth = getattr(self, "max_mu_depth", 50)
+            # Depth-based behaviour.
+            #
+            # These used to stop separating below depth 30 and freeze mu below
+            # depth 50, to bound what separation cost.  Trees on these
+            # instances reach depth 230, so the large majority of nodes ran
+            # with stale multipliers or no cuts at all -- and separation is now
+            # far cheaper than when those numbers were picked, so the reason
+            # for them is gone.  Lifting both is better on BOTH axes, measured
+            # over 20 seeds at n=100, density 0.2 (nodes as a geometric mean
+            # against the capped defaults, and total time):
+            #
+            #   literature   0.592   263.0s -> 215.9s
+            #   lemma1       0.668   307.5s -> 268.3s
+            #   full         0.706   395.9s -> 334.6s
+            #
+            # No run timed out and every root bound is unchanged, as a depth
+            # cap cannot reach the root.  Set either attribute to restore a
+            # cap; `max_cut_depth = 0` still gives the root-only rung.
+            max_cut_depth = getattr(self, "max_cut_depth", float("inf"))
+            max_mu_depth = getattr(self, "max_mu_depth", float("inf"))
             is_root = depth == 0
 
             # Node-level separation parameters
@@ -9166,11 +9438,17 @@ class LagrangianMST:
                 os.path.join(os.path.expanduser("~/Desktop"), "cut_debug_log.txt"),
             )
 
-            # Clear the log only once at the root node
-            if depth == 0:
-                with open(debug_log_path, "w") as f:
-                    f.write("CUT DEBUG LOG\n")
-                    f.write("=" * 100 + "\n")
+            # Clear the log only once at the root node.  Guarded by
+            # `debug_cuts`: with the debug log off nothing else in this method
+            # touches the file, and opening it unconditionally made every root
+            # solve crash on a machine without the hard-coded ~/Desktop.
+            if debug_cuts and depth == 0:
+                try:
+                    with open(debug_log_path, "w") as f:
+                        f.write("CUT DEBUG LOG\n")
+                        f.write("=" * 100 + "\n")
+                except OSError:
+                    debug_cuts = False
 
             def _dbg(msg, iter_num=None, force=False):
                 if not debug_cuts:
@@ -9481,12 +9759,13 @@ class LagrangianMST:
                     else np.zeros(0, dtype=float)
                 )
 
-                _dbg(
-                    f"Rebuilt cut structures: num_cuts={len(self.best_cuts)}, "
-                    f"rhs_eff_vec={rhs_eff_vec.tolist()}, "
-                    f"free_edge_counts={[len(a) for a in cut_edge_idx_free]}",
-                    force=True,
-                )
+                if debug_cuts:
+                    _dbg(
+                        f"Rebuilt cut structures: num_cuts={len(self.best_cuts)}, "
+                        f"rhs_eff_vec={rhs_eff_vec.tolist()}, "
+                        f"free_edge_counts={[len(a) for a in cut_edge_idx_free]}",
+                        force=True,
+                    )
 
             cut_edge_idx_free = []
             cut_edge_idx_all = []
@@ -9522,7 +9801,7 @@ class LagrangianMST:
 
             # Decide iteration limit for this node
             if is_root:
-                iter_limit = root_max_iter * 1.1 if self.use_cover_cuts else root_max_iter
+                iter_limit = root_max_iter
             else:
                 # Optional depth decay: with lambda inheritance, deep children
                 # only need to REFINE the parent's near-optimal lambda, not
@@ -9539,24 +9818,203 @@ class LagrangianMST:
                 else:
                     iter_limit = max_iter
 
+            # ------------------------------------------------------------------
+            # Two phases: lambda alone, then lambda and mu together.
+            #
+            # The node bound is a max over the multiplier TRAJECTORY, not a max
+            # over (lambda, mu) space, and that is what used to make the cuts
+            # counter-productive.  As soon as one cut carried mu > 0 the priced
+            # MST changed, the budget subgradient changed with it and the lambda
+            # sequence left the path it would have followed on its own.  It
+            # never came back: on n=50 roots the cut run ended at lambda=0.131
+            # where the plain run reached 0.1695, and the reported bound was
+            # 3761.5 against 3785.9 -- cuts on, bound DOWN by 24, before a
+            # single cut had done any work.
+            #
+            # So phase 1 reproduces the no-cut run exactly: every mu is held at
+            # zero, nothing is separated, and lambda walks the same sequence it
+            # would walk with `use_cover_cuts` off.  Phase 2 restarts from the
+            # best lambda of phase 1 with the inherited multipliers restored and
+            # spends `cut_phase_frac` of the budget separating and moving mu.
+            #
+            # Because `best_lower_bound` keeps the max over both phases and
+            # phase 1 is the plain run, the node bound with cuts is now never
+            # below the node bound without them -- the cuts can only add.  What
+            # they cost is the phase-2 iterations, which is the honest price to
+            # weigh them against.
+            cuts_enabled_here = self.use_cover_cuts and (
+                cutting_active_here or bool(self.best_cuts)
+            )
+
+            # Phase 1 is a full replay of the plain run, so a node with cuts
+            # costs (1 + cut_phase_frac) times the dual iterations of a node
+            # without them -- that, not separation, is where the cuts-on time
+            # goes.  `lam_phase_frac` exposes phase 1's share so the floor it
+            # buys can be weighed against what it costs; 1.0 is the replay in
+            # full, which is what the monotonicity argument above assumes.
+            if cuts_enabled_here:
+                lam_phase_frac = float(getattr(self, "lam_phase_frac", 1.0))
+                lam_phase_iters = int(round(lam_phase_frac * iter_limit))
+
+                if lam_phase_frac < 1.0:
+                    # A shortened replay still has to run: only the default,
+                    # which is the replay in full, may round down to the
+                    # `iter_limit` it was handed -- zero included.
+                    lam_phase_iters = max(1, lam_phase_iters)
+
+                cut_phase_frac = float(getattr(self, "cut_phase_frac", 2.0))
+                cut_phase_iters = max(1, int(round(cut_phase_frac * iter_limit)))
+            else:
+                lam_phase_iters = int(iter_limit)
+                cut_phase_iters = 0
+
+            total_iters = lam_phase_iters + cut_phase_iters
+
+            # Multipliers inherited from the parent, parked until phase 2.
+            parked_mu = {
+                i: float(self.best_cut_multipliers.get(i, 0.0))
+                for i in range(len(self.best_cuts))
+            }
+
+            # The lambda the node was handed.  With `inherit_lambda` that is the
+            # parent's best lambda, so (lam_at_entry, parked_mu) is the exact
+            # point the parent's own bound came from.  Phase 2 reopens there
+            # whenever a multiplier survived, which re-prices that point on its
+            # first iteration: the child minimises over a subset of the parent's
+            # trees, so it cannot score below the parent there, and the cut
+            # strength carries down the branch instead of having to be
+            # rediscovered from mu = 0 at every node.  With no inherited
+            # multiplier there is nothing to re-price and phase 2 opens at the
+            # best lambda phase 1 found, as before.
+            lam_at_entry = max(0.0, min(float(getattr(self, "lmbda", 0.0)), 1e4))
+            have_inherited_mu = any(v > 0.0 for v in parked_mu.values())
+
+            # Price the inherited point ONCE, before mu is parked.
+            #
+            # (lam_at_entry, parked_mu) is where the parent's own bound came
+            # from, and this node minimises over a subset of the parent's
+            # trees, so L_child at that point is >= the parent's bound.
+            # Recording it here raises `best_lower_bound` AND the dual state
+            # that goes with it -- best_lambda, best_cut_multipliers_for_best_bound,
+            # best_mst_edges -- so the multipliers this node hands its own
+            # children describe the stronger point too.  Without it the bound
+            # could be repaired after the fact (MSTNode clamps it to the
+            # parent's), but the dual solution behind it stayed weaker and the
+            # inversion simply reappeared one level down.
+            if cuts_enabled_here and have_inherited_mu and len(rhs_eff_vec) > 0:
+                try:
+                    self.lmbda = lam_at_entry
+                    self._invalidate_weight_cache()
+
+                    _c0, _l0, _e0 = self.compute_mst()
+
+                    if _e0 and not math.isinf(_c0) and not math.isnan(_c0):
+                        _mu0 = np.fromiter(
+                            (
+                                max(0.0, min(parked_mu.get(i, 0.0), 1e4))
+                                for i in range(len(rhs_eff_vec))
+                            ),
+                            dtype=float,
+                            count=len(rhs_eff_vec),
+                        )
+                        _lb0 = (
+                            _c0
+                            - lam_at_entry * self.budget
+                            - float(_mu0 @ rhs_eff_vec)
+                        )
+
+                        if (
+                            not math.isnan(_lb0)
+                            and not math.isinf(_lb0)
+                            and abs(_lb0) < 1e10
+                            and _lb0 > self.best_lower_bound
+                        ):
+                            self.best_lower_bound = _lb0
+                            self.best_lambda = lam_at_entry
+                            self.best_mst_edges = _e0
+                            self.best_cost = _c0
+                            self.best_cut_multipliers_for_best_bound = dict(parked_mu)
+
+                            _dbg(
+                                f"Inherited point priced: lambda={lam_at_entry:.6g}, "
+                                f"LB={_lb0:.6g}",
+                                force=True,
+                            )
+                except Exception as _exc:
+                    _dbg(f"Could not price the inherited point: {_exc}", force=True)
+
+            if cuts_enabled_here:
+                for i in parked_mu:
+                    self.best_cut_multipliers[i] = 0.0
+                self._invalidate_weight_cache()
+
             # Separation follows Algorithm 2 line 10: every budget-violating
             # tree produced by the multiplier sequence yields one seed cover.
             # Trees already separated on are skipped, and the active-pool cap
-            # bounds the total separation work spent at the node.
+            # bounds the total separation work spent at the node.  Only phase-2
+            # trees are separated on: those are priced at a lambda that is
+            # already near the node's dual optimum, so their seed covers are the
+            # ones that matter there, instead of covers read off a tree from the
+            # middle of the lambda ramp that no longer violates anything by the
+            # time lambda settles.
             sep_rounds = 0
             max_sep_rounds = int(getattr(self, "max_sep_rounds", int(iter_limit)))
             separated_trees = set()
 
             _dbg(
-                f"Iteration setup: iter_limit={int(iter_limit)}, "
-                f"max_sep_rounds={max_sep_rounds}",
+                f"Iteration setup: lambda_phase={lam_phase_iters}, "
+                f"cut_phase={cut_phase_iters}, "
+                f"max_sep_rounds={max_sep_rounds}, "
+                f"parked_mu={parked_mu}",
                 force=True,
             )
 
             # ------------------------------------------------------------------
             # 5) Subgradient iterations
             # ------------------------------------------------------------------
-            for iter_num in range(int(iter_limit)):
+            for iter_num in range(total_iters):
+                # Phase switch: rewind lambda to the best one phase 1 found,
+                # put the inherited multipliers back and clear the momentum, so
+                # phase 2 starts from the best point of the plain run.
+                if cuts_enabled_here and iter_num == lam_phase_iters:
+                    if have_inherited_mu:
+                        self.lmbda = lam_at_entry
+                    elif hasattr(self, "best_lambda"):
+                        self.lmbda = max(0.0, min(float(self.best_lambda), 1e4))
+
+                    # Re-denominate the mu step in the weights it is actually
+                    # added to.  weight_scale was fixed from the node's ENTRY
+                    # lambda, but the whole point of phase 1 is to move lambda,
+                    # and the modified weights move with it -- so a step sized
+                    # on entry can land well below what the MST can see by the
+                    # time it is taken.  One np.mean at the switch.
+                    _ws = float(
+                        np.mean(np.abs(self.edge_weights))
+                        + max(0.0, float(self.lmbda)) * len_scale
+                    )
+                    if _ws > 0.0 and not math.isnan(_ws):
+                        weight_scale = _ws
+                        if mu_cap_frac is not None:
+                            mu_increment_cap = float(mu_cap_frac) * weight_scale
+
+                    for i, mu_val in parked_mu.items():
+                        if i < len(self.best_cuts):
+                            self.best_cut_multipliers[i] = mu_val
+
+                    self._v_lambda = 0.0
+                    self._invalidate_weight_cache()
+                    prev_weights = None
+                    prev_mst_edges = None
+
+                    _dbg(
+                        f"Phase 2 starts: lambda={self.lmbda:.6g}, "
+                        f"restored_mu={ {k: round(v, 6) for k, v in parked_mu.items()} }",
+                        iter_num,
+                        force=True,
+                    )
+
+                cuts_live_now = cuts_enabled_here and iter_num >= lam_phase_iters
+
                 # --------------------------------------------------------------
                 # 5.1) MST with current λ and μ
                 # --------------------------------------------------------------
@@ -9607,6 +10065,28 @@ class LagrangianMST:
                     iter_num,
                 )
 
+                # The cut phase has nothing to do when it opens on a
+                # budget-feasible tree and no cut is live: a cover inequality is
+                # valid for every budget-feasible tree, so this tree violates
+                # none of them, separation would return an empty list and there
+                # is no mu to move.  The bound at this exact point was already
+                # recorded in phase 1 -- same lambda, same zero multipliers,
+                # same tree -- so stopping here costs nothing and saves the
+                # whole phase.  On these instances that is most nodes.
+                if (
+                    cuts_live_now
+                    and iter_num == lam_phase_iters
+                    and not self.best_cuts
+                    and mst_length <= self.budget
+                ):
+                    _dbg(
+                        "Cut phase skipped: feasible tree at the best lambda "
+                        "and no live cuts",
+                        iter_num,
+                        force=True,
+                    )
+                    break
+
                 # --------------------------------------------------------------
                 # 5.2) Separation (Algorithm 2, line 10)
                 #
@@ -9617,13 +10097,27 @@ class LagrangianMST:
                 # --------------------------------------------------------------
                 tree_key = frozenset(mst_edges)
 
+                # A cut added with almost no cut-phase iterations left cannot
+                # have its multiplier tuned: it takes a pool slot and distorts
+                # the modified weights without ever earning a bound.  That is
+                # the shape of the cliff the tree-completion rung falls off
+                # between a pool of 8 and one of 12 -- the phase has
+                # cut_phase_frac * iter_limit iterations to fit one multiplier
+                # per cut, and past some pool size there are more multipliers
+                # than iterations.  `min_new_cut_iters` refuses a cut that
+                # arrives too late to be fitted; 0 is off, which is the
+                # behaviour this replaces.
+                min_new_cut_iters = int(getattr(self, "min_new_cut_iters", 0))
+
                 should_separate = (
-                    cutting_active_here
+                    cuts_live_now
+                    and cutting_active_here
                     and mu_dynamic_here
                     and sep_rounds < max_sep_rounds
                     and len(self.best_cuts) < max_active_cuts
                     and mst_length > self.budget
                     and tree_key not in separated_trees
+                    and (total_iters - iter_num) >= min_new_cut_iters
                 )
 
                 _dbg(
@@ -9681,18 +10175,25 @@ class LagrangianMST:
                             lhs_free = len(T_loop & S_free)
                             violation = lhs_free - rhs_eff_new
 
-                            _dbg(
-                                f"Candidate cut[{cand_i}]: orig_size={len(S_set)}, "
-                                f"|fixed|={len(S_fixed)}, "
-                                f"|excluded|={len(S_excluded)}, "
-                                f"|free|={len(S_free)}, "
-                                f"rhs={rhs}, rhs_eff={rhs_eff_new}, "
-                                f"lhs_on_current_MST={lhs_free}, "
-                                f"violation={violation}, "
-                                f"len_sum={_cut_len(S_free):.3f}",
-                                iter_num,
-                                force=True,
-                            )
+                            # _dbg is a no-op with debugging off, but the
+                            # f-string is built before the call either way,
+                            # and _cut_len sums over the whole support: at a
+                            # few thousand edges per candidate that was a few
+                            # percent of the solve spent formatting a string
+                            # nobody reads.
+                            if debug_cuts:
+                                _dbg(
+                                    f"Candidate cut[{cand_i}]: orig_size={len(S_set)}, "
+                                    f"|fixed|={len(S_fixed)}, "
+                                    f"|excluded|={len(S_excluded)}, "
+                                    f"|free|={len(S_free)}, "
+                                    f"rhs={rhs}, rhs_eff={rhs_eff_new}, "
+                                    f"lhs_on_current_MST={lhs_free}, "
+                                    f"violation={violation}, "
+                                    f"len_sum={_cut_len(S_free):.3f}",
+                                    iter_num,
+                                    force=True,
+                                )
 
                             if violation >= min_cut_violation_for_add:
                                 scored_loop.append(
@@ -9701,7 +10202,23 @@ class LagrangianMST:
 
                         # Most violated on the generating tree first, ties
                         # broken in favour of smaller supports.
-                        scored_loop.sort(key=lambda t: (-t[0], len(t[1])))
+                        #
+                        # `cut_rank_mode="density"` ranks by violation per
+                        # support edge instead.  A dualized cover puts the SAME
+                        # mu on every edge of S, so within S the ordering the
+                        # MST sees is untouched and only the S-versus-rest
+                        # boundary moves: a large support spreads that push
+                        # into something close to a uniform shift, while a
+                        # small one concentrates it.  If that is what decides a
+                        # cut's worth here, violation alone is the wrong
+                        # ranking.  "violation" is the default and the
+                        # behaviour this replaces.
+                        if str(getattr(self, "cut_rank_mode", "violation")) == "density":
+                            scored_loop.sort(
+                                key=lambda t: (-t[0] / max(1, len(t[1])), len(t[1]))
+                            )
+                        else:
+                            scored_loop.sort(key=lambda t: (-t[0], len(t[1])))
 
                         remaining_slots = max(0, max_active_cuts - len(self.best_cuts))
 
@@ -9764,8 +10281,39 @@ class LagrangianMST:
                             LagrangianMST.cuts_separated += 1
                             new_idx = len(self.best_cuts) - 1
 
-                            # Positive initial μ makes a newly added cut affect the next MST.
-                            MU0 = getattr(self, "mu_init", 0.001)
+                            # Start at zero.  L(lambda, 0) is exactly the dual
+                            # value without the cut, so a cut can never lower
+                            # the bound at the moment it enters; the arbitrary
+                            # 1e-3 seed used before could, and was also small
+                            # enough to be invisible to the MST anyway.  A cut
+                            # is only added when it is violated, so g_i > 0 on
+                            # this very iteration and mu leaves 0 at the next
+                            # update.
+                            # A new cut starts at mu = 0 and the subgradient
+                            # raises it.  Starting it higher, on the theory
+                            # that the cut phase is short and a cut should not
+                            # spend its few iterations climbing, is strictly
+                            # worse -- monotonically so, over four seeds at
+                            # n = 250 on the tree-completion rung:
+                            #
+                            #     mu_init     nodes     time
+                            #     0.0           300     29.0s
+                            #     6.0           394     37.7s
+                            #    29.0           683     65.3s
+                            #    58.0          1106    125.6s
+                            #
+                            # (6, 29 and 58 are 1%, 5% and 10% of the weight
+                            # scale at this size.)  The dual is a MAXIMIZATION
+                            # over mu >= 0, and zero is where a cut belongs
+                            # before anything has shown it should be penalized:
+                            # a positive start prices edges the tree has not
+                            # been shown to overuse, which moves the MST off
+                            # the Lagrangian optimum and LOWERS the bound, and
+                            # the subgradient then spends iterations climbing
+                            # back down.  The cut phase is not long because mu
+                            # ramps up from zero; it is long because finding
+                            # the right mu is the work.
+                            MU0 = getattr(self, "mu_init", 0.0)
 
                             self.best_cut_multipliers[new_idx] = float(MU0)
                             self.best_cut_multipliers_for_best_bound[new_idx] = float(MU0)
@@ -9777,13 +10325,16 @@ class LagrangianMST:
                             existing[fz] = (new_idx, int(rhs))
                             changed_any = True
 
-                            _dbg(
-                                f"ADD cut[{new_idx}]: size={len(S)}, rhs={rhs}, "
-                                f"initial_mu={MU0}, violation={violation}, "
-                                f"len_sum={_cut_len(S):.3f}, edges={_cut_repr(S)}",
-                                iter_num,
-                                force=True,
-                            )
+                            # Same as above, and _cut_repr sorts the support
+                            # on top of it.
+                            if debug_cuts:
+                                _dbg(
+                                    f"ADD cut[{new_idx}]: size={len(S)}, rhs={rhs}, "
+                                    f"initial_mu={MU0}, violation={violation}, "
+                                    f"len_sum={_cut_len(S):.3f}, edges={_cut_repr(S)}",
+                                    iter_num,
+                                    force=True,
+                                )
 
                         if changed_any:
                             _rebuild_cut_structures()
@@ -9865,7 +10416,14 @@ class LagrangianMST:
                         # expensive budget repair periodically and on the last
                         # iteration. Controlled by `budget_repair_every`.
                         every = getattr(self, "budget_repair_every", 25)
-                        is_last = (iter_num >= iter_limit - 1)
+                        # Both the end of the run and the end of the lambda
+                        # phase count: the latter keeps the incumbent -- and so
+                        # the Polyak gap -- on the same schedule the plain run
+                        # follows, which is what makes phase 1 reproduce it.
+                        is_last = (
+                            iter_num >= total_iters - 1
+                            or (cuts_enabled_here and iter_num == lam_phase_iters - 1)
+                        )
                         # The expensive budget repair (mu-grid of Kruskals) only
                         # needs to run where it can actually improve the GLOBAL
                         # incumbent: at shallow depth. Deep nodes almost never
@@ -9885,10 +10443,20 @@ class LagrangianMST:
                         self.use_budget_repair = want_budget
                         rw, rl, rep_edges = self.primal_repair()
                         self.use_budget_repair = saved
+                        # The incumbent is the answer this solver reports, so
+                        # check the budget HERE rather than relying on
+                        # primal_repair's internal guarantee.  It does hold
+                        # (the min-length tree is rejected when it exceeds the
+                        # budget, and every swap re-checks), but an incumbent
+                        # that silently went over budget would be returned as
+                        # the optimum, so the invariant belongs at the point of
+                        # use.
                         if (
                             rep_edges is not None
                             and not math.isnan(rw)
                             and not math.isinf(rw)
+                            and not math.isnan(rl)
+                            and rl <= self.budget + 1e-9
                             and rw < self.best_upper_bound
                         ):
                             old_ub = self.best_upper_bound
@@ -9989,7 +10557,8 @@ class LagrangianMST:
                 )
 
                 if (
-                    cuts_present_here
+                    cuts_live_now
+                    and cuts_present_here
                     and mu_dynamic_here
                     and len(cut_edge_idx_free) > 0
                     and not (is_feasible and all_mu_small)
@@ -10034,7 +10603,8 @@ class LagrangianMST:
                     cut_subgradients = []
 
                     _dbg(
-                        f"Skip cut subgradients: cuts_present={cuts_present_here}, "
+                        f"Skip cut subgradients: cuts_live_now={cuts_live_now}, "
+                        f"cuts_present={cuts_present_here}, "
                         f"mu_dynamic={mu_dynamic_here}, "
                         f"num_cut_arrays={len(cut_edge_idx_free)}, "
                         f"is_feasible={is_feasible}, "
@@ -10070,16 +10640,74 @@ class LagrangianMST:
                     # Before we have a finite UB, avoid the huge first lambda jump.
                     alpha = fallback_alpha
 
-                # Step size for the cut block.  In "block" mode the Polyak ratio
-                # is taken over the cut subgradients alone, so the step is scaled
-                # to the rows it actually updates rather than to the budget row
-                # that dominates the joint norm.
+                # Step size for the cut block.
+                #
+                # "normalized": a fixed distance in modified-weight units along
+                # g_mu/||g_mu||, shrinking over the cut phase.  No duality gap
+                # enters, which is the point -- see the note on the modes above.
+                #
+                # "scaled": the joint Polyak ratio taken after the budget row is
+                # divided by the mean edge length, which brings the two row
+                # families into the same units.  The budget row stays in the
+                # norm -- so the step is still moderated by how far the tree is
+                # from the budget -- but it no longer outweighs the cut rows by
+                # the ~1e6 factor that pinned mu at its initial value.
+                #
+                # "block": the ratio over the cut subgradients alone.  Kept for
+                # the ablation; it overshoots badly (see the note above).
+                #
+                # "joint": the historical behaviour, alpha_mu = alpha.
                 cut_norm_sq = 0.0
                 for g in cut_subgradients:
                     cut_norm_sq += float(g) ** 2
 
-                if mu_step_mode == "block" and gap is not None and cut_norm_sq > 0.0:
+                if mu_step_mode == "normalized_inf" and cut_norm_sq > 0.0:
+                    # Same fixed distance per iteration, but measured with the
+                    # infinity norm instead of the 2-norm.  Under the 2-norm a
+                    # pool of k cuts each violated by one has ||g|| = sqrt(k),
+                    # so every multiplier advances at mu_travel/sqrt(k): the
+                    # more cuts are live, the slower each of them reaches the
+                    # range where it reprices the tree.  That penalises exactly
+                    # the rung that separates the most -- `full` emits two cuts
+                    # per tree where the others emit one.  Dividing by
+                    # max|g_i| instead advances each violated cut by
+                    # mu_travel regardless of how many are live.
+                    cut_phase_k = max(0, iter_num - lam_phase_iters)
+                    # Floor the decay at 1% of the opening step.  The decay
+                    # horizon (~1/(1-decay) iterations) and the cut-phase
+                    # length are set by two independent knobs, so a large
+                    # iteration budget drives mu_travel below anything that can
+                    # reprice an edge -- and below dead_mu_threshold -- while
+                    # every one of those iterations still pays a full Kruskal.
+                    # At the shipped budgets (cut phase 10-20 iterations,
+                    # decay 0.9) the floor never binds; it only stops the tail
+                    # of a long run from being pure overhead.
+                    mu_travel = (
+                        mu_step_frac
+                        * weight_scale
+                        * max(mu_step_decay ** cut_phase_k, 0.01)
+                    )
+                    g_inf = max(abs(float(g)) for g in cut_subgradients)
+                    alpha_mu = mu_travel / (gamma_mu * g_inf + eps)
+                elif mu_step_mode == "normalized" and cut_norm_sq > 0.0:
+                    # Move ||dmu|| = mu_step_frac * weight_scale * decay^k along
+                    # g_mu/||g_mu||.  Written as an alpha so the update below is
+                    # shared with the other modes: alpha_mu * gamma_mu * g_i is
+                    # the i-th component of exactly that vector.
+                    cut_phase_k = max(0, iter_num - lam_phase_iters)
+                    mu_travel = (
+                        mu_step_frac
+                        * weight_scale
+                        * (mu_step_decay ** cut_phase_k)
+                    )
+                    alpha_mu = mu_travel / (gamma_mu * math.sqrt(cut_norm_sq) + eps)
+                elif mu_step_mode == "block" and gap is not None and cut_norm_sq > 0.0:
                     alpha_mu = gamma_base * gap / (cut_norm_sq + eps)
+                elif mu_step_mode == "scaled" and gap is not None and cut_norm_sq > 0.0:
+                    g_budget_scaled = knapsack_subgradient / len_scale
+                    alpha_mu = gamma_base * gap / (
+                        g_budget_scaled ** 2 + cut_norm_sq + eps
+                    )
                 else:
                     alpha_mu = alpha
 
@@ -10132,7 +10760,7 @@ class LagrangianMST:
                 # If g_i > 0, the cut is violated and μ_i increases.
                 # If g_i < 0, the cut is slack and μ_i decreases.
                 # --------------------------------------------------------------
-                if mu_dynamic_here and len(cut_g_signed) > 0:
+                if cuts_live_now and mu_dynamic_here and len(cut_g_signed) > 0:
                     for i, g in enumerate(cut_g_signed):
                         g = float(g)
 

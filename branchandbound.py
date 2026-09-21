@@ -1459,11 +1459,7 @@
 #         return self.best_solution, self.best_upper_bound
 
 
-
-#gap
-
-
-
+#after checking cuts faster
 
 import heapq
 import networkx as nx
@@ -1737,8 +1733,21 @@ class BranchAndBound:
             total_weight = sum(root.lagrangian_solver.edge_attributes[(min(u, v), max(u, v))][0] for u, v in mst.edges)
             self.best_upper_bound = total_weight
             self.best_solution = root
-            root.mst_edges = list(mst.edges)
-            root.best_feasible_edges = list(mst.edges)
+
+            # networkx yields edges in adjacency order, not sorted, so these
+            # have to be normalised: everything else in the solver keys edges
+            # by (min, max), and edge_attributes[(7, 2)] is a KeyError.
+            #
+            # And only `best_feasible_edges` is set.  Overwriting
+            # `root.mst_edges` replaced the root's LAGRANGIAN tree with this
+            # greedy min-weight one, which is a different tree: is_feasible()
+            # would then test the budget on one and the connectivity on the
+            # other, and get_fractional_value would read lengths off a tree the
+            # node never priced (raising KeyError on the unnormalised tuples
+            # into the bargain).
+            root.best_feasible_edges = [
+                (min(u, v), max(u, v)) for u, v in mst.edges
+            ]
             if self.verbose:
                 print(f"Initial feasible MST found with weight: {total_weight}, length: {total_length}")
 
@@ -1902,7 +1911,24 @@ class BranchAndBound:
                                 print("Decision4: Prune (no candidates for branching)")
                             continue
 
-                        if isinstance(candidates, tuple) and len(candidates) == 2 and isinstance(candidates[1], MSTNode):
+                        # get_branching_candidates signals a forced
+                        # single-child decision as (edges, child).  The
+                        # child is None when a cover cut proved that side
+                        # infeasible too, and `None` is not an MSTNode --
+                        # so the old test let the TUPLE fall through as if
+                        # it were the candidate edge list, and branching
+                        # then picked `[rep]` or `None` out of it and blew
+                        # up in create_children with
+                        # "not enough values to unpack".  Both sides being
+                        # infeasible is a proof that the node is empty, so
+                        # the shape has to be recognised and the node
+                        # pruned, not mistaken for an edge list.
+                        if (
+                            isinstance(candidates, tuple)
+                            and len(candidates) == 2
+                            and (candidates[1] is None
+                                 or isinstance(candidates[1], MSTNode))
+                        ):
                             candidate_edges, single_child = candidates
                             branched_variable = candidate_edges[0] if isinstance(candidate_edges, list) else candidate_edges
                             if single_child is not None:
@@ -1994,7 +2020,24 @@ class BranchAndBound:
                                 print("Decision2: Prune (no candidates for branching)")
                             continue
 
-                        if isinstance(candidates, tuple) and len(candidates) == 2 and isinstance(candidates[1], MSTNode):
+                        # get_branching_candidates signals a forced
+                        # single-child decision as (edges, child).  The
+                        # child is None when a cover cut proved that side
+                        # infeasible too, and `None` is not an MSTNode --
+                        # so the old test let the TUPLE fall through as if
+                        # it were the candidate edge list, and branching
+                        # then picked `[rep]` or `None` out of it and blew
+                        # up in create_children with
+                        # "not enough values to unpack".  Both sides being
+                        # infeasible is a proof that the node is empty, so
+                        # the shape has to be recognised and the node
+                        # pruned, not mistaken for an edge list.
+                        if (
+                            isinstance(candidates, tuple)
+                            and len(candidates) == 2
+                            and (candidates[1] is None
+                                 or isinstance(candidates[1], MSTNode))
+                        ):
                             candidate_edges, single_child = candidates
                             branched_variable = candidate_edges[0] if isinstance(candidate_edges, list) else candidate_edges
                             if single_child is not None:

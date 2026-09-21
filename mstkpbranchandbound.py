@@ -2152,10 +2152,6 @@
 #         return max(0.01, min(0.99, f))  # Clamp away from 0/1 to avoid div-by-zero
     
 
-
-
-
-
 import heapq
 # import random
 import networkx as nx
@@ -2211,7 +2207,8 @@ class MSTNode(Node):
                  node_cut_frequency=10, parent_cover_cuts=None, parent_cover_multipliers=None,
                  use_bisection=False, max_iter=5, verbose=False, depth=0,
                  pseudocosts_up=None, pseudocosts_down=None, counts_up=None, counts_down=None,
-                 reliability_eta=3, lookahead_lambda=4, solver_overrides=None):
+                 reliability_eta=3, lookahead_lambda=4, solver_overrides=None,
+                 parent_lower_bound=None):
         if depth == 0:
             MSTNode.global_edges = [(min(u, v), max(u, v), w, l) for u, v, w, l in edges]
             MSTNode.global_graph = nx.Graph()
@@ -2298,8 +2295,42 @@ class MSTNode(Node):
                 setattr(self.lagrangian_solver, _k, _v)
 
         if MSTNode._solver_pool is None:
+            # Only the cut-shaping overrides belong on the probe.  The
+            # iteration-budget and primal-repair ones (child_iter_decay,
+            # child_min_iter, root_max_iter, enable_primal_repair,
+            # use_budget_repair, ...) would silently make every
+            # strong-branching probe many times more expensive than the two
+            # iterations simulate_branching_bound asks for -- a probe is meant
+            # to be a cheap estimate, not a second solve.
+            _SB_OVERRIDE_KEYS = {
+                "cut_strengthening",
+                "max_active_cuts",
+                "max_new_cuts_per_node",
+                "max_cut_depth",
+                "max_mu_depth",
+                "mu_step_mode",
+                "mu_step_frac",
+                "mu_step_decay",
+                "mu_cap_frac",
+                "mu_increment_cap",
+                "mu_init",
+                "gamma_mu",
+                "cut_phase_frac",
+                "lam_phase_frac",
+                "lift_cuts",
+                "min_new_cut_iters",
+                "cut_rank_mode",
+                "min_cut_violation_for_add",
+                "dead_mu_threshold",
+                "use_fast_kruskal",
+            }
+            _sb_overrides = {
+                k: v for k, v in self.solver_overrides.items()
+                if k in _SB_OVERRIDE_KEYS
+            }
+
             def _factory():
-                return LagrangianMST(
+                solver = LagrangianMST(
                     MSTNode.global_edges, self.num_nodes, self.budget,
                     fixed_edges=set(), excluded_edges=set(),
                     initial_lambda=self.initial_lambda,
@@ -2307,6 +2338,17 @@ class MSTNode(Node):
                     use_cover_cuts=self.use_cover_cuts, cut_frequency=self.cut_frequency,
                     use_bisection=False, verbose=False, shared_graph=MSTNode.global_graph
                 )
+                # The strong-branching solvers were built without the node's
+                # solver_overrides, so every simulation ran on library defaults
+                # no matter how the run was configured -- `cut_strengthening`
+                # included, which meant the attribution ladder's rungs all did
+                # the SAME thing inside strong branching and differed only in
+                # their real solves.  reset() does not clear these, so setting
+                # them once at construction is enough.
+                for _k, _v in _sb_overrides.items():
+                    setattr(solver, _k, _v)
+                return solver
+
             MSTNode._solver_pool = SolverPool(_factory, size=1)
         self._sb_pool = MSTNode._solver_pool
 
@@ -2337,6 +2379,41 @@ class MSTNode(Node):
             inherited_multipliers=self.cut_multipliers,
             depth=self.depth
         )
+
+        # A child's feasible region is a subset of its parent's, so every lower
+        # bound valid at the parent is valid here: the node bound is the better
+        # of the two.  Without this the reported bound can move BACKWARDS down a
+        # branch, which breaks the one invariant best-first search relies on --
+        # that the sequence of popped bounds is non-decreasing.
+        #
+        # With cuts off it held by accident: the child starts at the parent's
+        # best lambda and prices it on the first iteration, and
+        # L_child(lambda) >= L_parent(lambda) because the child minimises over
+        # fewer trees.  With cuts on the parent's bound also depends on mu, the
+        # child re-derives lambda with mu parked at zero, and the parent's
+        # (lambda, mu) point is never re-priced -- so the child can report less
+        # than its parent.  Measured on n=50, density 0.2, seed 7: 0 of 920
+        # children below their parent with cuts off, 24 of 288 with the
+        # literature cuts, dropping 1.12 on average.  Those inversions put
+        # loose nodes at the head of the queue and cost the search far more
+        # than the cuts were winning.
+        self.parent_lower_bound = parent_lower_bound
+
+        # The node's OWN dual bound, before the parent clamp below.  Every
+        # strong-branching estimate is derived from this node's dual solution
+        # (its priced weights, its best_mst_edges) and every probe re-solves
+        # from it, so the deltas they produce are commensurate with THIS
+        # number, not the clamped one.  Measuring a probe against a clamped
+        # bound drives fix/exc deltas negative on the 8-20% of children where
+        # the clamp binds, collapsing every branching score to the same floor
+        # and feeding zeros into the pseudocost table.
+        self.own_lower_bound = self.local_lower_bound
+        if (
+            parent_lower_bound is not None
+            and not math.isnan(parent_lower_bound)
+            and self.local_lower_bound < parent_lower_bound
+        ):
+            self.local_lower_bound = parent_lower_bound
 
         if self.best_upper_bound < getattr(MSTNode, "global_upper_bound", float("inf")):
             MSTNode.global_upper_bound = self.best_upper_bound
@@ -2521,18 +2598,7 @@ class MSTNode(Node):
             cut_like, rhs_like = pair
             return (set(_iter_edges_any(cut_like)), int(rhs_like))
 
-        # all_cuts = []
-        # for p in (self.active_cuts or []):
-        #     all_cuts.append(_norm_pair(p))
-        # for p in (getattr(self, "new_cuts", []) or []):
-        #     all_cuts.append(_norm_pair(p))
 
-        # # Multipliers: parent snapshot + 0 for newly added cuts
-        # parent_mu = getattr(solver, "best_cut_multipliers_for_best_bound", {}) or {}
-        # current_multipliers = dict(parent_mu)
-        # first_new = len(self.active_cuts or [])
-        # for cut_idx in range(first_new, len(all_cuts)):
-        #     current_multipliers[cut_idx] = 0.00001
         # 1) Build merged cuts
         all_cuts = []
         for p in (self.active_cuts or []):
@@ -2560,52 +2626,7 @@ class MSTNode(Node):
         must_prune_fixed = any((len(cut_set & F_fixed) > rhs) for (cut_set, rhs) in all_cuts)
 
         T_parent = set(self.mst_edges or [])
-        # --- helper: project & remap to a child ---
-        # def _project_and_remap_for_child(fixed_child_edges, excluded_child_edges):
-        #     infeasible = False
-        #     # key: frozenset(S_free) -> (rhs', μ)  (if duplicates after projection, keep strongest = smallest rhs')
-        #     projected = {}
-
-        #     for old_i, (S, rhs) in enumerate(all_cuts):
-        #         S_known = {e for e in S if e in known_edges}
-        #         S_fixed = S_known & fixed_child_edges
-        #         S_free  = S_known - fixed_child_edges - excluded_child_edges
-
-        #         rhs_prime = int(rhs) - len(S_fixed)
-        #         if rhs_prime < 0:
-        #             infeasible = True
-        #             break
-        #         if len(S_free) <= rhs_prime:
-        #             continue
-
-        #         key = frozenset(S_free)
-        #         mu_old = float(current_multipliers.get(old_i, 0.0))
-        #         prev = projected.get(key)
-        #         if prev is None or rhs_prime < prev[0] or (rhs_prime == prev[0] and abs(mu_old) > abs(prev[1])):
-        #             projected[key] = (rhs_prime, mu_old)
-
-        #     if infeasible:
-        #         return None, None, True
-
-        #     # deterministic ordering: you already sort by (-|S_free|, rhs', edges)
-        #     def _edge_tuple_sort_key(sfree):
-        #         return tuple(sorted(sfree))
-
-        #     ordered = sorted(
-        #         projected.items(),
-        #         key=lambda kv: (-len(kv[0]), kv[1][0], _edge_tuple_sort_key(kv[0]))
-        #     )
-
-        #     # *** limit to at most max_child_cuts strongest cuts ***
-        #     if len(ordered) > max_child_cuts:
-        #         ordered = ordered[:max_child_cuts]
-
-        #     kept_cuts, kept_mu = [], {}
-        #     for new_idx, (sfree_key, (rhs_prime, mu_val)) in enumerate(ordered):
-        #         kept_cuts.append((set(sfree_key), int(rhs_prime)))
-        #         kept_mu[new_idx] = float(mu_val)
-
-        #     return kept_cuts, kept_mu, False
+        
         def _project_and_remap_for_child(fixed_child_edges, excluded_child_edges):
             infeasible = False
             projected = {}
@@ -2683,7 +2704,8 @@ class MSTNode(Node):
                     pseudocosts_up=self.pseudocosts_up, pseudocosts_down=self.pseudocosts_down,
                     counts_up=self.counts_up, counts_down=self.counts_down,
                     reliability_eta=self.reliability_eta, lookahead_lambda=self.lookahead_lambda,
-                    solver_overrides=self.solver_overrides
+                    solver_overrides=self.solver_overrides,
+                    parent_lower_bound=self.local_lower_bound
                 )
 
         F_excluded = set(self.excluded_edges) | {normalized_edge}
@@ -2706,7 +2728,8 @@ class MSTNode(Node):
             pseudocosts_up=self.pseudocosts_up, pseudocosts_down=self.pseudocosts_down,
             counts_up=self.counts_up, counts_down=self.counts_down,
             reliability_eta=self.reliability_eta, lookahead_lambda=self.lookahead_lambda,
-            solver_overrides=self.solver_overrides
+            solver_overrides=self.solver_overrides,
+            parent_lower_bound=self.local_lower_bound
         )
 
         return fixed_child, excluded_child
@@ -2736,120 +2759,6 @@ class MSTNode(Node):
         real_weight, _ = self.lagrangian_solver.compute_real_weight_length()
         return real_weight
     
-
-    # def apply_peg_test(self, incumbent_ub, max_tests=20, candidate_source="mst"):
-    #     """
-    #     Lagrangian peg test / reduced-cost fixing.
-
-    #     If forcing e IN gives LB > incumbent, then e must be OUT.
-    #     If forcing e OUT gives LB > incumbent, then e must be IN.
-    #     """
-
-    #     if incumbent_ub == float("inf"):
-    #         return 0
-
-    #     solver = self.lagrangian_solver
-    #     fixed_new = set(self.fixed_edges)
-    #     excluded_new = set(self.excluded_edges)
-
-    #     # Choose candidate edges
-    #     if candidate_source == "mst":
-    #         candidates = [
-    #             tuple(sorted(e)) for e in self.mst_edges
-    #             if tuple(sorted(e)) not in fixed_new
-    #             and tuple(sorted(e)) not in excluded_new
-    #             and tuple(sorted(e)) not in self.branched_edges
-    #         ]
-    #     else:
-    #         candidates = [
-    #             tuple(sorted((u, v))) for u, v, _, _ in self.edges
-    #             if tuple(sorted((u, v))) not in fixed_new
-    #             and tuple(sorted((u, v))) not in excluded_new
-    #             and tuple(sorted((u, v))) not in self.branched_edges
-    #         ]
-
-    #     candidates = candidates[:max_tests]
-
-    #     n_fixed = 0
-
-    #     for e in candidates:
-    #         e = tuple(sorted(e))
-
-    #         # Test e fixed IN
-    #         with self._sb_pool.borrow() as probe:
-    #             probe.reset(
-    #                 fixed_edges=fixed_new | {e},
-    #                 excluded_edges=excluded_new,
-    #                 initial_lambda=solver.best_lambda,
-    #                 step_size=solver.step_size,
-    #                 max_iter=solver.max_iter,
-    #                 use_cover_cuts=self.use_cover_cuts,
-    #                 cut_frequency=self.cut_frequency,
-    #                 use_bisection=self.use_bisection,
-    #                 verbose=False,
-    #             )
-
-    #             lb_in, _, _ = probe.solve(depth=self.depth)
-
-    #         if lb_in > incumbent_ub:
-    #             excluded_new.add(e)
-    #             n_fixed += 1
-    #             continue
-
-    #         # Test e fixed OUT
-    #         with self._sb_pool.borrow() as probe:
-    #             probe.reset(
-    #                 fixed_edges=fixed_new,
-    #                 excluded_edges=excluded_new | {e},
-    #                 initial_lambda=solver.best_lambda,
-    #                 step_size=solver.step_size,
-    #                 max_iter=solver.max_iter,
-    #                 use_cover_cuts=self.use_cover_cuts,
-    #                 cut_frequency=self.cut_frequency,
-    #                 use_bisection=self.use_bisection,
-    #                 verbose=False,
-    #             )
-
-    #             lb_out, _, _ = probe.solve(depth=self.depth)
-
-    #         if lb_out > incumbent_ub:
-    #             fixed_new.add(e)
-    #             n_fixed += 1
-
-    #     if n_fixed == 0:
-    #         return 0
-
-    #     # Update the node's fixed/excluded sets
-    #     self.fixed_edges = fixed_new
-    #     self.excluded_edges = excluded_new
-
-    #     # Re-solve the current node with the new fixings
-    #     solver.reset(
-    #         fixed_edges=self.fixed_edges,
-    #         excluded_edges=self.excluded_edges,
-    #         initial_lambda=solver.best_lambda,
-    #         step_size=solver.step_size,
-    #         max_iter=solver.max_iter,
-    #         use_cover_cuts=self.use_cover_cuts,
-    #         cut_frequency=self.cut_frequency,
-    #         use_bisection=self.use_bisection,
-    #         verbose=self.verbose,
-    #     )
-
-    #     self.local_lower_bound, self.best_upper_bound, self.new_cuts = solver.solve(
-    #         inherited_cuts=[
-    #             (set(tuple(sorted((u, v))) for u, v in cut), rhs)
-    #             for cut, rhs in self.active_cuts
-    #         ],
-    #         inherited_multipliers=self.cut_multipliers,
-    #         depth=self.depth,
-    #     )
-
-    #     raw_edges = solver.last_mst_edges or []
-    #     self.mst_edges = [tuple(sorted((u, v))) for u, v in raw_edges]
-    #     self.actual_cost, _ = solver.compute_real_weight_length()
-
-    #     return n_fixed
 
     def get_branching_candidates(self):
 
@@ -2981,9 +2890,9 @@ class MSTNode(Node):
             for edge in candidate_edges:
                 u, v = edge
                 fixed_lower_bound = self.simulate_fix_edge(u, v)
-                fix_score = (fixed_lower_bound - self.local_lower_bound) if fixed_lower_bound != float('inf') else float('inf')
+                fix_score = (fixed_lower_bound - self.own_lower_bound) if fixed_lower_bound != float('inf') else float('inf')
                 excluded_lower_bound = self.simulate_exclude_edge(u, v)
-                exc_score = (excluded_lower_bound - self.local_lower_bound) if excluded_lower_bound != float('inf') else float('inf')
+                exc_score = (excluded_lower_bound - self.own_lower_bound) if excluded_lower_bound != float('inf') else float('inf')
 
                 # score = 0.5 * min(fix_score, exc_score) + 0.5 * max(fix_score, exc_score) if fix_score != float('inf') and exc_score != float('inf') else float('inf')
                 score = max(fix_score, 1e-6) * max(exc_score, 1e-6) if fix_score != float('inf') and exc_score != float('inf') else float('inf')
@@ -3094,360 +3003,7 @@ class MSTNode(Node):
                             (u, v) not in self.branched_edges]
             return candidate_edges if candidate_edges else None
         
-        # elif self.branching_rule == "reliability":
-        #     # Get fractional solution for prioritization
-        #     shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
-        #     # shor_primal_solution = self.lagrangian_solver.compute_dantzig_wolfe_solution(self)
-
-        #     candidate_edges = []
-        #     if shor_primal_solution is not None:
-        #         tolerance = 1e-6
-        #         candidate_edges = [
-        #             e for e in shor_primal_solution
-        #             if e not in self.fixed_edges
-        #             and e not in self.excluded_edges
-        #             and e not in self.branched_edges
-        #             and shor_primal_solution[e] > 0.0
-        #             and shor_primal_solution[e] < 1.0
-        #         ]
-        #         candidate_edges.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
-
-        #     if shor_primal_solution is None or not candidate_edges:
-        #         mst_edges = [tuple(sorted((u, v))) for u, v in self.lagrangian_solver.best_mst_edges]
-        #         candidate_edges = [
-        #             e for e in mst_edges
-        #             if e not in self.fixed_edges
-        #             and e not in self.excluded_edges
-        #             and e not in self.branched_edges
-        #         ]
-
-        #     if not candidate_edges:
-        #         return None
-
-        #     # Separate by reliability
-        #     unhistoried = []
-        #     reliable_candidates = []
-        #     for e in candidate_edges:
-        #         cu = self.counts_up.get(e, 0)
-        #         cd = self.counts_down.get(e, 0)
-        #         if cu < self.reliability_eta or cd < self.reliability_eta:
-        #             unhistoried.append(e)
-        #         else:
-        #             reliable_candidates.append(e)
-
-        #     # Adaptive lookahead
-        #     duality_gap = (
-        #         self.best_upper_bound - self.local_lower_bound
-        #         if self.best_upper_bound < float("inf") else float("inf")
-        #     )
-        #     if self.depth < 5:
-        #         max_sb_evals = self.lookahead_lambda
-        #     else:
-        #         max_sb_evals = max(2, self.lookahead_lambda - 1)
-
-        #     # if shor_primal_solution is not None:
-
-        #     #     unhistoried.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
-
-        #     unhistoried = unhistoried[:max_sb_evals]
-
-        #     edges_to_fix = set()
-        #     edges_to_exclude = set()
-        #     best_score = float("-inf")
-        #     best_edge = None
-        #     scores = []
-
-        #     # Evaluate unreliable edges with strong branching
-        #     for edge in unhistoried:
-        #         # Better fractional estimation
-        #         if shor_primal_solution is not None and edge in shor_primal_solution:
-        #             f = shor_primal_solution[edge]
-        #             f = max(0.01, min(0.99, f))
-        #         else:
-        #             f = self.get_fractional_value(edge)
-
-        #         count_up = self.counts_up.get(edge, 0)
-        #         count_down = self.counts_down.get(edge, 0)
-
-
-        #         sb_score, fix_delta, exc_delta, fix_inf, exc_inf = self.calculate_strong_branching_score(edge)
-
-        #         # Adaptive learning rate
-        #         if count_up == 0 and count_down == 0:
-        #             alpha = 0.5
-        #         elif count_up < 3 or count_down < 3:
-        #             alpha = 0.3
-        #         else:
-        #             alpha = 0.1
-
-        #         # Update pseudocosts (UP / fix = x_e → 1)
-        #         if not fix_inf and (1 - f) > 1e-6:
-        #             new_pc_up = max(0, fix_delta) / max(1e-9, (1 - f))
-        #             if count_up == 0:
-        #                 self.pseudocosts_up[edge] = new_pc_up
-        #             else:
-        #                 old_pc = self.pseudocosts_up.get(edge, 0)
-        #                 if not math.isnan(old_pc) and not math.isinf(old_pc):
-        #                     self.pseudocosts_up[edge] = (1 - alpha) * old_pc + alpha * new_pc_up
-        #                 else:
-        #                     self.pseudocosts_up[edge] = new_pc_up
-        #             self.counts_up[edge] = count_up + 1
-
-        #         # Update pseudocosts (DOWN / exclude = x_e → 0)
-        #         if not exc_inf and f > 1e-6:
-        #             new_pc_down = max(0, exc_delta) / max(1e-9, f)
-        #             if count_down == 0:
-        #                 self.pseudocosts_down[edge] = new_pc_down
-        #             else:
-        #                 old_pc = self.pseudocosts_down.get(edge, 0)
-        #                 if not math.isnan(old_pc) and not math.isinf(old_pc):
-        #                     self.pseudocosts_down[edge] = (1 - alpha) * old_pc + alpha * new_pc_down
-        #                 else:
-        #                     self.pseudocosts_down[edge] = new_pc_down
-        #             self.counts_down[edge] = count_down + 1
-
-        #         # DEBUG: state after strong branching update for this edge
-        #         # print(
-        #         #     f"[RLB] NodeDepth={self.depth} EDGE={edge} AFTER_SB "
-        #         #     f"pc_up={self.pseudocosts_up.get(edge, None)} "
-        #         #     f"pc_down={self.pseudocosts_down.get(edge, None)} "
-        #         #     f"counts=({self.counts_up.get(edge, 0)}, {self.counts_down.get(edge, 0)}) "
-        #         #     f"fix_inf={fix_inf} exc_inf={exc_inf} sb_score={sb_score:.4f}"
-        #         # )
-
-        #         # Process SB outcome
-        #         if not fix_inf and not exc_inf:
-        #             scores.append((sb_score, edge, fix_inf, exc_inf))
-        #             if sb_score > best_score:
-        #                 best_score = sb_score
-        #                 best_edge = edge
-        #         else:
-        #             # If one side is infeasible, we can force the other decision
-        #             if fix_inf:
-        #                 edges_to_exclude.add(edge)
-        #             if exc_inf:
-        #                 edges_to_fix.add(edge)
-
-        #     # Evaluate reliable candidates using pseudocosts
-        #     for edge in reliable_candidates:
-        #         if shor_primal_solution is not None and edge in shor_primal_solution:
-        #             f = shor_primal_solution[edge]
-        #             f = max(0.01, min(0.99, f))
-        #         else:
-        #             f = self.get_fractional_value(edge)
-
-        #         pc_up = self.pseudocosts_up.get(edge, 1.0)
-        #         pc_down = self.pseudocosts_down.get(edge, 1.0)
-
-        #         count_up = self.counts_up.get(edge, 0)
-        #         count_down = self.counts_down.get(edge, 0)
-
-        #         # Confidence-weighted scoring
-        #         confidence_up = min(1.0, count_up / (2 * self.reliability_eta))
-        #         confidence_down = min(1.0, count_down / (2 * self.reliability_eta))
-        #         confidence = (confidence_up + confidence_down) / 2
-
-        #         delta_up = pc_up * (1 - f)
-        #         delta_down = pc_down * f
-        #         geometric_mean = (delta_up * delta_down) ** 0.5
-        #         score = geometric_mean * (0.9 + 0.1 * confidence)
-
-        #         scores.append((score, edge, False, False))
-
-        #     if not scores and not (edges_to_fix or edges_to_exclude):
-        #         return None
-
-        #     # Handle forced decisions
-        #     if edges_to_fix or edges_to_exclude:
-        #         if self.verbose:
-        #             print(f"[RLB] FORCED CHILD: fix={edges_to_fix}, exclude={edges_to_exclude}")
-        #         child = self.create_single_child(edges_to_fix, edges_to_exclude)
-        #         return ([list(edges_to_fix)[0] if edges_to_fix else list(edges_to_exclude)[0]], child)
-        #     else:
-        #         scores.sort(key=lambda x: x[0], reverse=True)
-        #         best_score, best_edge, fix_inf, exc_inf = scores[0]
-
-        #         if self.verbose:
-        #             print(f"[RLB] SELECTED best_edge={best_edge} score={best_score:.4f}")
-
-        #     return [best_edge]
-        # elif self.branching_rule == "reliability":
-        #     # 1) Fractional solution for prioritization
-        #     shor_primal_solution = self.lagrangian_solver.compute_weighted_average_solution()
-
-        #     candidate_edges = []
-        #     if shor_primal_solution is not None:
-        #         tolerance = 1e-6
-        #         candidate_edges = [
-        #             e for e in shor_primal_solution
-        #             if e not in self.fixed_edges
-        #             and e not in self.excluded_edges
-        #             and e not in self.branched_edges
-        #             and shor_primal_solution[e] > tolerance
-        #             and shor_primal_solution[e] < 1.0 - tolerance
-        #         ]
-        #         # most fractional first
-        #         candidate_edges.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
-
-        #     if shor_primal_solution is None or not candidate_edges:
-        #         mst_edges = [tuple(sorted((u, v))) for u, v in self.lagrangian_solver.best_mst_edges]
-        #         candidate_edges = [
-        #             e for e in mst_edges
-        #             if e not in self.fixed_edges
-        #             and e not in self.excluded_edges
-        #             and e not in self.branched_edges
-        #         ]
-
-        #     if not candidate_edges:
-        #         return None
-
-        #     # 2) Split into unhistoried vs reliable, based on TOTAL observations
-        #     unhistoried = []
-        #     reliable_candidates = []
-        #     for e in candidate_edges:
-        #         cu = self.counts_up.get(e, 0)
-        #         cd = self.counts_down.get(e, 0)
-
-        #         # print("counts",  cu, cd)
-        #         total = cu + cd
-        #         if total >= self.reliability_eta:
-        #             reliable_candidates.append(e)
-        #         else:
-        #             unhistoried.append(e)
-
-        #     # 3) Adaptive lookahead: how many edges to strong-branch
-        #     if self.depth < 5:
-        #         max_sb_evals = self.lookahead_lambda
-        #     else:
-        #         max_sb_evals = max(2, self.lookahead_lambda - 1)
-
-        #     # Strong branching only on the most fractional unhistoried edges
-        #     if shor_primal_solution is not None:
-        #         unhistoried.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
-        #         reliable_candidates.sort(key=lambda e: abs(shor_primal_solution.get(e, 0.5) - 0.5))
-
-        #     else:
-        #         unhistoried.sort(key=lambda e: abs(self.get_fractional_value(e) - 0.5))
-        #         reliable_candidates.sort(key=lambda e: abs(self.get_fractional_value(e) - 0.5))
-
-
-        #     unhistoried = unhistoried[:max_sb_evals]
-
-        #     edges_to_fix = set()
-        #     edges_to_exclude = set()
-        #     scores = []
-
-        #     # 4) Strong branching on unhistoried edges (also updates pseudocosts)
-        #     for edge in unhistoried:
-        #         if shor_primal_solution is not None and edge in shor_primal_solution:
-        #             f = shor_primal_solution[edge]
-        #         else:
-        #             f = self.get_fractional_value(edge)
-        #         f = max(0.01, min(0.99, f))
-
-        #         count_up = self.counts_up.get(edge, 0)
-        #         count_down = self.counts_down.get(edge, 0)
-
-        #         sb_score, fix_delta, exc_delta, fix_inf, exc_inf = self.calculate_strong_branching_score(edge)
-        #         # print("unhistoriedscore", sb_score)
-
-        #         # adaptive learning rate
-        #         if count_up == 0 and count_down == 0:
-        #             alpha = 0.5
-        #         elif count_up < 3 or count_down < 3:
-        #             alpha = 0.3
-        #         else:
-        #             alpha = 0.1
-
-        #         # update pseudocosts up
-        #         if not fix_inf and (1 - f) > 1e-6:
-        #             new_pc_up = max(0, fix_delta) / max(1e-9, (1 - f))
-        #             old = self.pseudocosts_up.get(edge, None)
-        #             if old is None or math.isnan(old) or math.isinf(old):
-        #                 self.pseudocosts_up[edge] = new_pc_up
-        #             else:
-        #                 self.pseudocosts_up[edge] = (1 - alpha) * old + alpha * new_pc_up
-        #             self.counts_up[edge] = count_up + 1
-
-        #         # update pseudocosts down
-        #         if not exc_inf and f > 1e-6:
-        #             new_pc_down = max(0, exc_delta) / max(1e-9, f)
-        #             old = self.pseudocosts_down.get(edge, None)
-        #             if old is None or math.isnan(old) or math.isinf(old):
-        #                 self.pseudocosts_down[edge] = new_pc_down
-        #             else:
-        #                 self.pseudocosts_down[edge] = (1 - alpha) * old + alpha * new_pc_down
-        #             self.counts_down[edge] = count_down + 1
-
-        #         if not fix_inf and not exc_inf:
-        #             scores.append((sb_score, edge, False, False))
-        #         else:
-        #             if fix_inf:
-        #                 edges_to_exclude.add(edge)
-        #             if exc_inf:
-        #                 edges_to_fix.add(edge)
-
-        #     # 5) Pseudocost scoring for reliable edges
-        #     for edge in reliable_candidates:
-        #         if shor_primal_solution is not None and edge in shor_primal_solution:
-        #             f = shor_primal_solution[edge]
-        #         else:
-        #             f = self.get_fractional_value(edge)
-        #         f = max(0.01, min(0.99, f))
-
-        #         pc_up = self.pseudocosts_up.get(edge, 1.0)
-        #         pc_down = self.pseudocosts_down.get(edge, 1.0)
-
-        #         cu = self.counts_up.get(edge, 0)
-        #         cd = self.counts_down.get(edge, 0)
-        #         confidence_up = min(1.0, cu / (2 * self.reliability_eta))
-        #         confidence_down = min(1.0, cd / (2 * self.reliability_eta))
-        #         confidence = 0.5 * (confidence_up + confidence_down)
-
-        #         # delta_up = pc_up * (1 - f)
-        #         # delta_down = pc_down * f
-        #         # geometric_mean = max(1e-9, delta_up * delta_down) ** 0.5
-        #         # score = geometric_mean * (0.9 + 0.1 * confidence)
-        #         # print("realiablescore", score)
-
-        #         # scores.append((score, edge, False, False))
-        #         delta_up = pc_up * (1 - f)
-        #         delta_down = pc_down * f
-
-        #         # Use product, like in strong branching, to match scale
-        #         gain_up = max(delta_up, 0.0)
-        #         gain_down = max(delta_down, 0.0)
-
-        #         score = max(gain_up, 1e-6) * max(gain_down, 1e-6)
-
-        #         # Optional: keep a small confidence modulation, but don't shrink the scale too much
-        #         score *= (0.9 + 0.1 * confidence)
-
-        #         # print("reliablescore", score)
-
-        #         scores.append((score, edge, False, False))
-
-
-        #     if not scores and not (edges_to_fix or edges_to_exclude):
-        #         return None
-
-        #     # 6) Forced decisions from infeasible SB sides
-        #     if edges_to_fix or edges_to_exclude:
-        #         if self.verbose:
-        #             print(f"[RLB] FORCED CHILD: fix={edges_to_fix}, exclude={edges_to_exclude}")
-        #         child = self.create_single_child(edges_to_fix, edges_to_exclude)
-        #         # pick any representative edge for logging
-        #         rep = list(edges_to_fix)[0] if edges_to_fix else list(edges_to_exclude)[0]
-        #         return ([rep], child)
-
-        #     # 7) Normal case: choose best score
-        #     scores.sort(key=lambda x: x[0], reverse=True)
-        #     best_score, best_edge, _, _ = scores[0]
-
-        #     if self.verbose:
-        #         print(f"[RLB] SELECTED best_edge={best_edge} score={best_score:.4f}")
-
-        #     return [best_edge]
+        
         elif self.branching_rule == "reliability":
             # 1) Candidate edges: current MST edges (no fractional needed)
             # mst_edges = [tuple(sorted((u, v))) for u, v in self.lagrangian_solver.best_mst_edges]
@@ -4096,6 +3652,7 @@ class MSTNode(Node):
             reliability_eta=self.reliability_eta,
             lookahead_lambda=self.lookahead_lambda,
             solver_overrides=self.solver_overrides,
+            parent_lower_bound=self.local_lower_bound,
         )
 
         return child
@@ -4171,9 +3728,10 @@ class MSTNode(Node):
                 sim_solver.min_cut_violation_for_add = getattr(
                     self.lagrangian_solver, "min_cut_violation_for_add"
                 )
-            # The probe solver is pooled once and never sees solver_overrides,
-            # so without this it would keep the defaults and quietly mix ladder
-            # rungs inside a single run.
+            # Belt and braces: the pool factory already applies the
+            # cut-shaping overrides at construction, but the probe is also
+            # reused across nodes, so re-assert the two that decide which
+            # ladder rung it is simulating.
             for _attr in ("cut_strengthening", "max_active_cuts"):
                 if hasattr(self.lagrangian_solver, _attr):
                     setattr(sim_solver, _attr,
@@ -4232,19 +3790,48 @@ class MSTNode(Node):
         """
         u, v = tuple(sorted(edge))
 
+        # Only +inf proves infeasibility.
+        #
+        # The caller turns `fix_infeasible` into a FORCED single child that
+        # excludes the edge for good, with no sibling -- so this flag has to be
+        # a proof, not a guess.  Every `return float("inf")` inside solve() is
+        # one: a cycle among the fixed edges, a graph that cannot be spanned
+        # under the exclusions, or a valid cut whose reduced right-hand side
+        # has gone negative.
+        #
+        # -inf is NOT.  solve() hands back `best_lower_bound`, which reset()
+        # initialises to -inf and which stays there if no iteration produced a
+        # usable bound -- that means "no bound computed", not "no solution".
+        # NaN is a numerical failure and proves nothing either.  The old test
+        # was `isnan(lb) or isinf(lb)`, which swept both in and could throw the
+        # optimum away.  They are now treated as "no information": nothing is
+        # forced and the edge simply carries no strong-branching signal.
+        def _probe(lb):
+            if lb == float("inf"):
+                return True, False            # proven infeasible
+            if math.isnan(lb) or math.isinf(lb):
+                return False, True            # unusable (-inf / NaN)
+            return False, False
+
         # --- Strong-branching probe: FIX edge ---
         fixed_lower_bound = self.simulate_branching_bound(edge, fix_edge=True, max_iters=2)
-        fix_infeasible = math.isnan(fixed_lower_bound) or math.isinf(fixed_lower_bound)
+        fix_infeasible, fix_unusable = _probe(fixed_lower_bound)
 
-        if self.verbose and fix_infeasible:
-            print(f"Fixed simulation for edge {edge} is infeasible (LB={fixed_lower_bound})")
+        if self.verbose and (fix_infeasible or fix_unusable):
+            print(f"Fixed simulation for edge {edge}: "
+                  f"{'infeasible' if fix_infeasible else 'unusable'} (LB={fixed_lower_bound})")
 
         # --- Strong-branching probe: EXCLUDE edge ---
         excluded_lower_bound = self.simulate_branching_bound(edge, fix_edge=False, max_iters=2)
-        exclude_infeasible = math.isnan(excluded_lower_bound) or math.isinf(excluded_lower_bound)
+        exclude_infeasible, exc_unusable = _probe(excluded_lower_bound)
 
-        if self.verbose and exclude_infeasible:
-            print(f"Excluded simulation for edge {edge} is infeasible (LB={excluded_lower_bound})")
+        if self.verbose and (exclude_infeasible or exc_unusable):
+            print(f"Excluded simulation for edge {edge}: "
+                  f"{'infeasible' if exclude_infeasible else 'unusable'} (LB={excluded_lower_bound})")
+
+        # An unusable probe yields no delta and no forcing.
+        if fix_unusable or exc_unusable:
+            return 0.0, 0.0, 0.0, fix_infeasible, exclude_infeasible
 
         # If both directions are infeasible, this edge is useless as a branching candidate
         if fix_infeasible and exclude_infeasible:
@@ -4255,8 +3842,16 @@ class MSTNode(Node):
 
         # --- Compute LB improvements (relative to current node LB) ---
         # For infeasible side, treat delta as 0 for logging/pseudocosts (we don't use it when *_infeasible is True).
-        fix_delta = (fixed_lower_bound - self.local_lower_bound) if not fix_infeasible else 0.0
-        exc_delta = (excluded_lower_bound - self.local_lower_bound) if not exclude_infeasible else 0.0
+        fix_delta = (fixed_lower_bound - self.own_lower_bound) if not fix_infeasible else 0.0
+        exc_delta = (excluded_lower_bound - self.own_lower_bound) if not exclude_infeasible else 0.0
+
+        # Guard against a non-finite delta reaching the score or the
+        # pseudocosts: max(nan, 0.0) returns nan in Python, which would then
+        # propagate through the product score and poison the EMA.
+        if math.isnan(fix_delta) or math.isinf(fix_delta):
+            fix_delta = 0.0
+        if math.isnan(exc_delta) or math.isinf(exc_delta):
+            exc_delta = 0.0
 
         # Only positive improvements should contribute to the score
         fix_gain = max(fix_delta, 0.0)
@@ -4290,7 +3885,7 @@ class MSTNode(Node):
         normalized_edge = tuple(sorted((u, v)))
         mst_edges = [tuple(sorted((x, y))) for x, y in self.lagrangian_solver.best_mst_edges]
         if normalized_edge in mst_edges:
-            return self.local_lower_bound
+            return self.own_lower_bound
 
         mst_graph = nx.Graph(mst_edges)
         mst_graph.add_edge(u, v)
@@ -4298,7 +3893,7 @@ class MSTNode(Node):
         try:
             cycle = nx.find_cycle(mst_graph, source=u)
         except nx.NetworkXNoCycle:
-            return self.local_lower_bound
+            return self.own_lower_bound
 
         cycle_without_fixed = [edge for edge in cycle if edge not in self.fixed_edges]
         heaviest_edge = None
@@ -4315,14 +3910,14 @@ class MSTNode(Node):
 
         fixed_edge_weight = self.get_modified_weight(normalized_edge)
         heaviest_edge_weight = self.get_modified_weight(heaviest_edge)
-        new_lower_bound = self.local_lower_bound + fixed_edge_weight - heaviest_edge_weight
+        new_lower_bound = self.own_lower_bound + fixed_edge_weight - heaviest_edge_weight
         return new_lower_bound
 
     def simulate_exclude_edge(self, u, v):
         normalized_edge = tuple(sorted((u, v)))
         mst_edges = [tuple(sorted((x, y))) for x, y in self.lagrangian_solver.best_mst_edges]
         if normalized_edge not in mst_edges:
-            return self.local_lower_bound
+            return self.own_lower_bound
 
         mst_graph = nx.Graph(mst_edges)
         mst_graph.remove_edge(u, v)
@@ -4349,7 +3944,7 @@ class MSTNode(Node):
 
         excluded_edge_weight = self.get_modified_weight(normalized_edge)
         replacement_edge_weight = self.get_modified_weight(cheapest_edge)
-        new_lower_bound = self.local_lower_bound - excluded_edge_weight + replacement_edge_weight
+        new_lower_bound = self.own_lower_bound - excluded_edge_weight + replacement_edge_weight
         return new_lower_bound
 
     def print_cut_info(self):
@@ -4382,7 +3977,7 @@ class MSTNode(Node):
             f = 1 - min(1.0, max(0.0, edge_contrib))  # High contrib = more fractional (likely to flip out)
         else:
             sim_lb = self.simulate_fix_edge(*edge)
-            delta = max(0, sim_lb - self.local_lower_bound)
+            delta = max(0, sim_lb - self.own_lower_bound)
             f = min(1.0, max(0.0, delta / (self.lagrangian_solver.best_lambda or 1.0)))  # Delta normalized by lambda
         if self.verbose:
             print(f"Slackness-based f={f:.2f} for edge {edge}")
