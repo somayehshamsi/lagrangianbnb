@@ -3244,19 +3244,19 @@ def main():
         }
         ,
         # ==== LADDER L1 : literature cuts, root only, one cover (RS) ======
-        {
-            "branching_rule": "reliability",
-            "use_bisection": False,
-            "use_2opt": False,
-            "use_shooting": False,
-            "cover_cuts": True,
-            "cut_strengthening": "literature",
-            "cut_root_only": True,
-            "max_active_cuts": 1,
-            "inherit-step-size": False,
-            "inherit_lambda": True
-        }
-        ,
+        # {
+        #     "branching_rule": "reliability",
+        #     "use_bisection": False,
+        #     "use_2opt": False,
+        #     "use_shooting": False,
+        #     "cover_cuts": True,
+        #     "cut_strengthening": "literature",
+        #     "cut_root_only": True,
+        #     "max_active_cuts": 1,
+        #     "inherit-step-size": False,
+        #     "inherit_lambda": True
+        # }
+        # ,
         # ===== LADDER L2 : same cuts, node-local, inherited, pool of 5 =====
         {
             "branching_rule": "reliability",
