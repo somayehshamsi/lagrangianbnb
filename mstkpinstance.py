@@ -121,8 +121,8 @@ import networkx as nx
 import matplotlib.pyplot as plt
 # import numpy as np
 
-MAX_EDGE_WEIGHT = 1000
-MAX_EDGE_LENGTH = 1000
+MAX_EDGE_WEIGHT = 12000
+MAX_EDGE_LENGTH = 12000
 # CONVEX_BUDGET_FACTOR = 0.8
 DEFAULT_BETA = 0.6515927038133658
 
@@ -132,7 +132,7 @@ DEFAULT_BETA = 0.6515927038133658
 #   >0   -> positive correlation (cheap edges tend to be short): harder.
 #   <0   -> negative correlation (cheap edges tend to be long): usually easier.
 # Set this to 0.8 or -0.8 for correlated runs, then back to 0.0.
-DEFAULT_CORR = 0
+DEFAULT_CORR =  0.0
 
 
 class MSTKPInstance:
